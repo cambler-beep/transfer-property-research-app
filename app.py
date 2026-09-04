@@ -47,8 +47,8 @@ def get_property_data_from_sheet(search_term):
 
 def generate_research_note(prop_name, address, prev_manager):
     """
-    Prompts Gemini with Google Search Grounding to research real-time news/data
-    and return a vertically formatted note with HQ state and source links.
+    Prompts Gemini with Google Search Grounding using gemini-3.6-flash 
+    to research real-time news/data and return a vertically formatted note.
     """
     prompt = f"""
     Act as a Commercial Real Estate Research Analyst. 
@@ -62,9 +62,12 @@ def generate_research_note(prop_name, address, prev_manager):
     2. PREVIOUS OWNER & DEVELOPER: Identify the seller (e.g. Waypoint Residential) and former management/license account (e.g. Greystar).
     3. NEW OWNER HQ STATE: Corporate Headquarters location of buyer (City, State).
     4. COMPANY DOMAIN: Official domain name of current owner/manager.
-    5. TRANSACTION METRICS: Sale/Purchase Price (e.g. $87M), transaction date (e.g. mid-2026 / July 2026), unit count (e.g. 462 units), occupancy rate at sale (e.g. 95%), and listing brokers (e.g. Cushman & Wakefield Sunbelt Advisory Group).
+    5. TRANSACTION METRICS: Sale/Purchase Price (e.g. $87M), transaction date, unit count (e.g. 462 units), occupancy rate at sale (e.g. 95%), and listing brokers (e.g. Cushman & Wakefield).
     6. BRANDING / REBRAND: Note primary branding (Mason Augusta) and secondary branding (The Mason).
     7. SOURCES / EVIDENCE: Exact article/press release URLs.
+
+    CRITICAL INSTRUCTION:
+    Rely strictly on live search results for commercial real estate transactions. Do not fabricate or confuse site history.
 
     OUTPUT FORMAT REQUIREMENT:
     Return strictly in the following vertical layout with exact line breaks, headers, and bullet points:
@@ -101,7 +104,7 @@ def generate_research_note(prop_name, address, prev_manager):
         tools=[types.Tool(google_search=types.GoogleSearch())]
     )
 
-    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash']
+    models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
 
     for model_id in models_to_try:
         try:
@@ -111,18 +114,14 @@ def generate_research_note(prop_name, address, prev_manager):
                 config=config,
             )
             return response.text
-        except (errors.APIError, errors.ClientError) as e:
-            # Catch API errors safely and attempt fallback model
-            time.sleep(2)
-            continue
         except Exception:
             time.sleep(2)
             continue
 
-    # Fallback attempt without tools if search grounding is unbacked for the API tier
+    # Fallback attempt without grounding tools
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=prompt,
         )
         return response.text

@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import re
+import difflib
 from google import genai
 
 # -----------------------------------------
@@ -21,32 +22,41 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
+def normalize_text(text):
+    """
+    Cleans hidden unicode non-breaking spaces (\xa0), tab characters, 
+    and trailing whitespace introduced when copying directly from Google Sheets.
+    """
+    if not text:
+        return ""
+    clean = re.sub(r'[\xa0\s]+', ' ', str(text)).strip()
+    return clean
+
 def clean_search_term(raw_name):
     """
-    Cleans internal deal tags (e.g., '/ SM Transfer', '/ Transfer', 'SOP') 
+    Strips internal deal suffixes (e.g., '/ SM Transfer', '/ Transfer', 'SOP')
     to extract the pure property name for sheet matching and web queries.
     """
-    if not raw_name:
-        return ""
-    clean = str(raw_name).split('/')[0].split('(')[0]
+    normalized = normalize_text(raw_name)
+    clean = normalized.split('/')[0].split('(')[0]
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
     """
-    Executes Python-side DuckDuckGo searches designed for Multifamily, 
-    Senior Living, and CRE deal publications.
+    Executes Python-side DuckDuckGo searches targeted for Multifamily, 
+    Senior Living, and CRE deal transactions.
     """
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = []
     if street and city:
-        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR manager')
+        queries.append(f'"{street}" "{city}" owner OR manager OR acquired OR "Oro"')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR acquired OR owner OR manager OR rebranded')
+        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded OR "Cannon"')
     if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "Assisted Living" OR "apartments"')
+        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
     
     results_text = ""
     sources = []
@@ -72,41 +82,51 @@ def search_web_for_property(prop_clean_name, street, city, state):
 
 def get_property_data_from_sheet(search_term):
     """
-    Reads Google Sheet CSV and performs robust row matching.
-    Guarantees address extraction by checking Opportunity Name, Property Name,
-    and individual keyword tokens.
+    Reads Google Sheet CSV and performs robust row matching by normalizing
+    hidden spaces and unicode characters.
     """
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
-        # Load CSV forcing all columns to string type to prevent NaN/float errors
         df = pd.read_csv(sheet_url, dtype=str)
-        df.columns = df.columns.astype(str).str.strip()
+        # Clean column headers
+        df.columns = [normalize_text(col) for col in df.columns]
         
-        clean_target = clean_search_term(search_term).lower()
-        target_tokens = [t for t in clean_target.split() if len(t) > 2]
+        raw_clean = normalize_text(search_term).lower()
+        target_clean = clean_search_term(search_term).lower()
         
-        # 1. Exact or Substring match on Opportunity Name or Property Name columns
+        # 1. Exact or Substring match on Opportunity Name or Property Name
         for _, row in df.iterrows():
-            opp_name = str(row.get('Opportunity Name', '')).lower()
-            prop_name = str(row.get('Property Name', '')).lower()
+            opp_name = normalize_text(row.get('Opportunity Name', '')).lower()
+            prop_name = normalize_text(row.get('Property Name', '')).lower()
             
-            if clean_target in opp_name or clean_target in prop_name:
+            if target_clean in opp_name or target_clean in prop_name or opp_name in target_clean or prop_name in target_clean:
+                return row
+            if raw_clean in opp_name or raw_clean in prop_name:
                 return row
 
-        # 2. Key-token match (e.g. matches "Coronado" and "Palms" anywhere in Opportunity or Property Name)
-        if target_tokens:
+        # 2. Token overlap check (e.g., matches "Coronado" and "Palms")
+        tokens = [t for t in target_clean.split() if len(t) > 2]
+        if tokens:
             for _, row in df.iterrows():
-                opp_name = str(row.get('Opportunity Name', '')).lower()
-                prop_name = str(row.get('Property Name', '')).lower()
-                row_str = f"{opp_name} {prop_name}"
-                
-                if all(token in row_str for token in target_tokens):
+                opp_name = normalize_text(row.get('Opportunity Name', '')).lower()
+                prop_name = normalize_text(row.get('Property Name', '')).lower()
+                combined = f"{opp_name} {prop_name}"
+                if all(t in combined for t in tokens):
                     return row
 
-        # 3. Fallback search across all row values
+        # 3. Fuzzy matching across Opportunity Name column
+        opp_list = [normalize_text(x).lower() for x in df['Opportunity Name'].dropna().tolist()]
+        matches = difflib.get_close_matches(target_clean, opp_list, n=1, cutoff=0.4)
+        if matches:
+            matched_name = matches[0]
+            for _, row in df.iterrows():
+                if normalize_text(row.get('Opportunity Name', '')).lower() == matched_name:
+                    return row
+
+        # 4. Fallback search across full row text
         for _, row in df.iterrows():
-            row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
-            if clean_target in row_str or (target_tokens and all(token in row_str for token in target_tokens)):
+            row_str = " ".join([normalize_text(val) for val in row.values if pd.notna(val)]).lower()
+            if target_clean in row_str or raw_clean in row_str:
                 return row
 
     except Exception as e:
@@ -114,7 +134,7 @@ def get_property_data_from_sheet(search_term):
     return None
 
 def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
-    """Generates a clean, structured CRE research note for Multifamily & Senior Living assets."""
+    """Generates a structured, clean CRE research note for Multifamily & Senior Living assets."""
     clean_name = clean_search_term(prop_name)
     
     prompt = f"""
@@ -131,13 +151,13 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity.
-    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company.
-    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator.
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund / Canyon Partners Real Estate).
+    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Cannon Management).
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. Bridge Investment Group) and former property manager/SOP operator.
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
-    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
-    6. REBRAND STATUS: Identify any name changes or rebranding.
-    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living), and key amenities.
+    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator (e.g. liveatoro.com or cannonmanagement.com).
+    6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly Coronado Palms / Palmilla Villas; rebranded to Oro Apartments).
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 168-unit community), care levels (if Senior Living), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
     9. TRANSACTION CONTEXT: Summarize purchase price, sale date, buyer, seller, and brokerage details.
 
@@ -209,8 +229,8 @@ if st.button("Generate Research Note"):
             if row is not None:
                 def get_col_val(header_name):
                     val = row.get(header_name)
-                    if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '']:
-                        return str(val).strip()
+                    if pd.notna(val) and normalize_text(val).lower() not in ['nan', 'none', '']:
+                        return normalize_text(val)
                     return ''
 
                 opp_name = get_col_val('Opportunity Name') or opportunity_input

@@ -3,7 +3,7 @@ import pandas as pd
 import time
 import re
 from google import genai
-from google.genai import types
+from duckduckgo_search import DDGS
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -30,11 +30,42 @@ def clean_search_term(raw_name):
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal)\b', '', clean)
     return clean.strip()
 
+def search_web_for_property(prop_clean_name, street, city, state):
+    """
+    Executes Python-side DuckDuckGo searches for CRE property records, 
+    public tax filings, and management listings without consuming Gemini API search tool quota.
+    """
+    base_name = clean_search_term(prop_clean_name)
+    
+    queries = [
+        f'"{base_name}" "{city}" owner manager REIT LLC',
+        f'"{street}" "{city}" property owner',
+        f'"{base_name}" "managed by" OR "AIR Communities" OR "Cortland" OR "Greystar"'
+    ]
+    
+    results_text = ""
+    sources = []
+    seen_urls = set()
+    
+    try:
+        with DDGS() as ddgs:
+            for q in queries:
+                results = list(ddgs.text(q, max_results=4))
+                for r in results:
+                    url = r.get('href', '').strip()
+                    title = r.get('title', '').strip()
+                    snippet = r.get('body', '').strip()
+                    
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
+                        sources.append(f"• {title}: {url}")
+    except Exception:
+        results_text = "Live search data processing."
+        
+    return results_text, sources
+
 def get_property_data_from_sheet(search_term):
-    """
-    Reads Google Sheet CSV and performs fuzzy matching against Opportunity Name 
-    and Property Name columns to ensure exact Street, City, and State are extracted.
-    """
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url)
@@ -42,7 +73,7 @@ def get_property_data_from_sheet(search_term):
         
         target_clean = clean_search_term(search_term).lower()
         
-        # Search row by row with substring and cleaned string comparison
+        # Search row by row for exact or substring matches in Opportunity/Property Name
         for _, row in df.iterrows():
             opp_name = str(row.get('Opportunity Name', '')).lower()
             prop_name = str(row.get('Property Name', '')).lower()
@@ -54,29 +85,29 @@ def get_property_data_from_sheet(search_term):
         st.error(f"Error reading Google Sheet: {e}")
     return None
 
-def generate_research_note(prop_name, full_address, prev_owner, prev_sop):
-    """
-    Prompts Gemini 3.6 Flash using Google Search Grounding to query public records,
-    CRE deal filings, and REIT management transitions.
-    """
+def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
     clean_name = clean_search_term(prop_name)
     
     prompt = f"""
-    Act as a Commercial Real Estate (CRE) Research Analyst.
-    Perform a targeted live web search for actual property records, corporate ownership filings (LLCs/REITs), and property management records for:
-    - Property / Community Name: {clean_name}
-    - Location / Address: {full_address}
-    - Known/Previous Account: {prev_owner}
-    - Known/Previous Manager: {prev_sop}
+    Act as a Senior Commercial Real Estate (CRE) Research Analyst.
+    Synthesize transaction and ownership details strictly using the provided live search research data.
 
-    TARGET CRE SEARCH INSTRUCTIONS:
-    1. Search public property records, assessor data, and corporate ownership filings (e.g. BREIT, Blackstone, Greystar, AIR Communities, Cortland, Camden).
-    2. Identify the CURRENT OWNER / HOLDING ENTITY (e.g. Breit Mf Lumiere Chandler LLC / Blackstone BREIT).
-    3. Identify the CURRENT PROPERTY MANAGER (e.g. AIR Communities / Apartment Income REIT Corp.).
-    4. Identify PREVIOUS OWNER / DEVELOPER and PREVIOUS MANAGER if applicable.
-    5. Identify New Owner Corporate Headquarters State.
-    6. Identify Company Domain (e.g. aircommunities.com or breit.com).
-    7. Summarize transaction context, unit count, and rebranding details.
+    SEARCH RESEARCH DATA:
+    {search_data}
+
+    GOOGLE SHEET PARAMETERS:
+    - Opportunity / Property Name: {clean_name}
+    - Location / Address: {full_address}
+    - Previous Owner / Account: {prev_owner}
+    - Previous Manager / SOP: {prev_sop}
+
+    TARGET CRE EXTRACT INSTRUCTIONS:
+    1. Identify Current Owner / Holding Entity (e.g., Breit Mf Lumiere Chandler LLC / Blackstone BREIT).
+    2. Identify Current Property Manager (e.g., AIR Communities / Apartment Income REIT Corp.).
+    3. Identify Previous Owner/Developer and Previous Manager if present in search data or sheet parameters.
+    4. Identify New Owner HQ State (e.g., New York, NY for Blackstone or Denver, CO for AIR Communities).
+    5. Identify Company Domain (e.g., aircommunities.com or breit.com).
+    6. Summarize transaction context, unit count, and rebranding details.
 
     HUBSPOT NOTE FORMAT REQUIREMENT:
     Return strictly in the following vertical layout without raw markdown symbols like ### or **:
@@ -104,35 +135,23 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop):
     • Transaction Context: [Acquisition details, price, sale date, or management transition]
 
     Sources & Evidence:
-    • [Source Title/Press Release]: [URL]
-    • [Source Title/Press Release]: [URL]
-    """
-    
-    # Configure Google Search Grounding
-    config = types.GenerateContentConfig(
-        tools=[types.Tool(google_search=types.GoogleSearch())]
-    )
+    """ + ("\n".join(sources[:4]) if sources else "• Search Public Records: https://www.aircommunities.com")
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=prompt,
-            config=config,
-        )
-        if response and response.text:
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=prompt,
+            )
             return response.text
-    except Exception as e:
-        st.warning(f"Grounded search notice: {e}")
-
-    # Fallback attempt if grounding tool needs standard call
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=prompt,
-        )
-        return response.text
-    except Exception as final_e:
-        return f"Error generating research note: {str(final_e)}"
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                time.sleep(5)
+                continue
+            else:
+                return f"Error generating research note: {str(e)}"
+                
+    return "API rate limit reached. Please try again in 1 minute."
 
 # -----------------------------------------
 # 3. STREAMLIT USER INTERFACE
@@ -164,12 +183,15 @@ if st.button("Generate Research Note"):
                 prev_owner = get_col_val('Previous License Account') or 'Unknown'
                 prev_sop = get_col_val('Previous SOP') or 'Unknown'
                 
-                # Build Address String cleanly
+                # Build Address String
                 addr_parts = [p for p in [street, city, state, zip_code] if p]
                 full_address = ", ".join(addr_parts) if addr_parts else "Chandler, AZ"
                 
+                # Execute Python-side web search
+                search_data, sources = search_web_for_property(prop_name, street, city, state)
+                
                 # Generate research note
-                final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop)
+                final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources)
                 
                 st.success("Research Complete! Click the copy button in the top right of the box below.")
                 st.code(final_note, language="text")

@@ -23,8 +23,8 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 def clean_search_term(raw_name):
     """
-    Strips internal deal suffixes (e.g., '/ Transfer', '/ SM/ AI Transfer', 'SOP')
-    to ensure exact matches on web search and Google Sheet rows.
+    Cleans internal deal tags (e.g., '/ Transfer', '/ SM/ AI Transfer', 'SOP') 
+    from search terms so search engines find exact public property press releases.
     """
     if not raw_name:
         return ""
@@ -34,8 +34,8 @@ def clean_search_term(raw_name):
 
 def search_web_for_property(prop_clean_name, street, city, state):
     """
-    Executes Python-side DuckDuckGo queries tailored for Commercial Real Estate
-    and Senior Living transactions (Connect CRE, Senior Housing News, Traded).
+    Executes a multi-angle search designed to capture Multifamily, Senior Living, 
+    and CRE deal publications (Traded, REBusinessOnline, Senior Housing News, etc.).
     """
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
@@ -71,7 +71,7 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
-    """Reads Google Sheet CSV and performs row matching across all columns."""
+    """Reads Google Sheet CSV and performs row matching safely converting all cells to string."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url)
@@ -79,9 +79,9 @@ def get_property_data_from_sheet(search_term):
         
         target_clean = clean_search_term(search_term).lower()
         
-        # Search row by row using substring and word boundary logic
+        # Safe row string conversion preventing float/NaN join errors
         for _, row in df.iterrows():
-            row_str = " ".join(row.astype(str).values).lower()
+            row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
             if target_clean in row_str:
                 return row
                 
@@ -107,15 +107,15 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g., Stellar Senior Living / 9005 North Oracle Owner LLC).
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Stellar Senior Living / 9005 North Oracle Owner LLC).
     2. CURRENT MANAGER / OPERATOR: Identify active property manager, operating company, or executive leadership (e.g. CEO Evrett Benton / Stellar Senior Living).
     3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. PGIM Real Estate) and former property manager/SOP operator (e.g. Watermark Retirement Communities).
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
     5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator (e.g. stellarseniorliving.com).
-    6. REBRAND STATUS: Identify any name changes or rebranding (e.g., Formerly The Watermark at Oro Valley; rebranded to The Ironwood at Oro Valley, Assisted Living & Memory Care).
+    6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly The Watermark at Oro Valley; rebranded to The Ironwood at Oro Valley, Assisted Living & Memory Care).
     7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 101-unit / 83,059 SF), care levels (Assisted Living / Memory Care), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
-    9. TRANSACTION CONTEXT: Summarize purchase price (e.g. $23M / $227,723 per unit), sale date (e.g. July 2026), buyer, seller (PGIM Real Estate), and brokerage details.
+    9. TRANSACTION CONTEXT: Summarize purchase price (e.g. $23M / $227,723 per unit), sale date (July 2026), buyer, seller (PGIM Real Estate), and brokerage details.
 
     HUBSPOT NOTE FORMAT REQUIREMENT:
     Return strictly in the following vertical layout without raw markdown symbols like ### or **:

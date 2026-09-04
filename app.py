@@ -65,11 +65,10 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
-    """Reads Google Sheet CSV using the original, working Pandas logic."""
+    """Reads Google Sheet CSV using the original logic, with a fix for NaN float errors."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url)
-        # Clean headers the exact way it worked before
         df.columns = df.columns.astype(str).str.strip()
         
         target_clean = clean_search_term(search_term).lower()
@@ -78,7 +77,7 @@ def get_property_data_from_sheet(search_term):
             opp_name = str(row.get('Opportunity Name', '')).lower()
             prop_name = str(row.get('Property Name', '')).lower()
             
-            # Safe row-wide string search to prevent float/NaN errors
+            # THE FIX: .astype(str) prevents the sequence item expected str, float found error
             row_str = " ".join(row.astype(str).values).lower()
             
             if target_clean in opp_name or target_clean in prop_name or target_clean in row_str:
@@ -181,7 +180,6 @@ if st.button("Generate Research Note"):
             row = get_property_data_from_sheet(opportunity_input)
             
             if row is not None:
-                # Reverted exactly to the column extraction logic that worked for you before
                 def get_col_val(header_name):
                     val = row.get(header_name)
                     if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '']:

@@ -21,6 +21,21 @@ genai.configure(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
+def get_available_model():
+    """
+    Finds an active available model for your API Key dynamically
+    to prevent 404 NotFound model errors.
+    """
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                if 'flash' in m.name or 'pro' in m.name:
+                    return m.name
+        # Fallback default if list_models isn't permitted
+        return "models/gemini-2.5-flash"
+    except Exception:
+        return "models/gemini-2.5-flash"
+
 def get_property_data_from_sheet(search_term):
     """
     Reads Google Sheet CSV export link, cleans column names, 
@@ -46,7 +61,7 @@ def generate_research_note(prop_name, address, prev_manager):
     """
     Prompts Gemini to research the web and return 
     a vertically formatted note with HQ state and source links.
-    Includes retry logic for API limits.
+    Includes auto model selection & retry logic for rate limits.
     """
     prompt = f"""
     Act as a Commercial Real Estate Research Analyst. 
@@ -93,8 +108,8 @@ def generate_research_note(prop_name, address, prev_manager):
     * [Article/Press Release Title]: [URL]
     """
     
-    # Standard official Gemini 1.5 Flash model
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    selected_model_name = get_available_model()
+    model = genai.GenerativeModel(selected_model_name)
     
     # Retry up to 3 times if rate-limited
     for attempt in range(3):
@@ -105,9 +120,11 @@ def generate_research_note(prop_name, address, prev_manager):
             if "ResourceExhausted" in str(e) or "429" in str(e):
                 time.sleep(4 * (attempt + 1))  # Pause 4s, 8s, 12s
             else:
-                raise e
+                # If specific model error occurs, try fallback
+                fallback_model = genai.GenerativeModel('models/gemini-2.5-flash')
+                response = fallback_model.generate_content(prompt)
+                return response.text
                 
-    # Final attempt
     response = model.generate_content(prompt)
     return response.text
 

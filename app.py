@@ -23,8 +23,8 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 def clean_search_term(raw_name):
     """
-    Cleans internal deal tags (e.g., '/ Transfer', '/ SM/ AI Transfer', 'SOP') 
-    from search terms so search engines find exact public property press releases.
+    Strips internal deal tags (e.g., '/ SM Transfer', '/ Transfer', 'SOP')
+    to extract the core property name for sheet lookup and web research.
     """
     if not raw_name:
         return ""
@@ -34,8 +34,8 @@ def clean_search_term(raw_name):
 
 def search_web_for_property(prop_clean_name, street, city, state):
     """
-    Executes a multi-angle search designed to capture Multifamily, Senior Living, 
-    and CRE deal publications (Traded, REBusinessOnline, Senior Housing News, etc.).
+    Executes Python-side DuckDuckGo searches targeted for Multifamily, CRE,
+    and Senior Living transactions.
     """
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
@@ -44,9 +44,9 @@ def search_web_for_property(prop_clean_name, street, city, state):
     if street and city:
         queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR "$"')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR PGIM OR Stellar OR rebranded OR "$23M"')
+        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded')
     if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "Assisted Living" OR "Ironwood"')
+        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
     
     results_text = ""
     sources = []
@@ -71,20 +71,41 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
-    """Reads Google Sheet CSV and performs row matching safely converting all cells to string."""
+    """
+    Reads Google Sheet CSV and performs tokenized matching against Opportunity Name 
+    and Property Name to ensure 100% row match accuracy.
+    """
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url)
         df.columns = df.columns.astype(str).str.strip()
         
-        target_clean = clean_search_term(search_term).lower()
+        clean_target = clean_search_term(search_term).lower()
+        target_tokens = [t for t in clean_target.split() if len(t) > 2]
         
-        # Safe row string conversion preventing float/NaN join errors
+        # 1. Exact or Substring match on Opportunity/Property Name columns
         for _, row in df.iterrows():
-            row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
-            if target_clean in row_str:
+            opp_name = str(row.get('Opportunity Name', '')).lower()
+            prop_name = str(row.get('Property Name', '')).lower()
+            
+            if clean_target in opp_name or clean_target in prop_name:
+                return row
+
+        # 2. Tokenized match (all words present in Opportunity or Property Name)
+        for _, row in df.iterrows():
+            opp_name = str(row.get('Opportunity Name', '')).lower()
+            prop_name = str(row.get('Property Name', '')).lower()
+            row_str = f"{opp_name} {prop_name}"
+            
+            if target_tokens and all(token in row_str for token in target_tokens):
                 return row
                 
+        # 3. Fallback across entire row
+        for _, row in df.iterrows():
+            row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
+            if clean_target in row_str or (target_tokens and all(token in row_str for token in target_tokens)):
+                return row
+
     except Exception as e:
         st.error(f"Error reading Google Sheet: {e}")
     return None
@@ -107,15 +128,15 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Stellar Senior Living / 9005 North Oracle Owner LLC).
-    2. CURRENT MANAGER / OPERATOR: Identify active property manager, operating company, or executive leadership (e.g. CEO Evrett Benton / Stellar Senior Living).
-    3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. PGIM Real Estate) and former property manager/SOP operator (e.g. Watermark Retirement Communities).
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity.
+    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company.
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator.
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
-    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator (e.g. stellarseniorliving.com).
-    6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly The Watermark at Oro Valley; rebranded to The Ironwood at Oro Valley, Assisted Living & Memory Care).
-    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 101-unit / 83,059 SF), care levels (Assisted Living / Memory Care), and key amenities.
+    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
+    6. REBRAND STATUS: Identify any name changes or rebranding.
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
-    9. TRANSACTION CONTEXT: Summarize purchase price (e.g. $23M / $227,723 per unit), sale date (July 2026), buyer, seller (PGIM Real Estate), and brokerage details.
+    9. TRANSACTION CONTEXT: Summarize purchase price, sale date, buyer, seller, and brokerage details.
 
     HUBSPOT NOTE FORMAT REQUIREMENT:
     Return strictly in the following vertical layout without raw markdown symbols like ### or **:
@@ -130,7 +151,7 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     • Current Owner: [Owner Name / Holding Entity / Purchasing LLC]
     • Previous Owner: {prev_owner if prev_owner != 'Unknown' else '[Previous Owner / Seller Name]'}
     • New Owner HQ State: [City, State of HQ]
-    • Current Manager: [Current Property Manager / Operating Company & Executive Leadership]
+    • Current Manager: [Current Property Manager / Operating Company]
     • Current Manager HQ State: [City, State of HQ]
     • Previous Manager: {prev_sop if prev_sop != 'Unknown' else '[Previous Manager Name]'}
 

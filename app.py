@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 from google import genai
-from google.genai import errors
+from google.genai import types
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -46,77 +46,87 @@ def get_property_data_from_sheet(search_term):
 
 def generate_research_note(prop_name, address, prev_manager):
     """
-    Prompts Gemini to research the web and return 
-    a vertically formatted note with HQ state and source links.
+    Prompts Gemini with Google Search Grounding to research real-time news/data
+    and return a vertically formatted note with HQ state and source links.
     """
     prompt = f"""
     Act as a Commercial Real Estate Research Analyst. 
-    Conduct a live web search for the multifamily property:
-    - Name: {prop_name}
-    - Address: {address}
-    - Previous Manager: {prev_manager}
+    Perform a live web search to verify actual commercial real estate transaction press releases, news, and records for:
+    - Property Name: {prop_name}
+    - Location/Address: {address}
+    - Previous/Known Manager: {prev_manager}
 
-    Find the following information:
-    1. The current/new owner and new property manager.
-    2. The Headquartered State (HQ State) of the new owner/company.
-    3. The domain name of the new company (e.g., example.com).
-    4. Whether there was a rebrand (new community name).
-    5. Any value-add renovations, planned expansions, or transaction context (new development vs portfolio acquisition).
-    6. Specific news/article links as evidence.
+    Search specifically for recent sales, acquisitions, seller names, buyer names, brokerage press releases (e.g., Cushman & Wakefield, JLL, CBRE), purchase prices, unit counts, and corporate headquarters location.
+
+    Find and verify:
+    1. The actual current/new owner and property manager (e.g. Southwood Realty Co.).
+    2. The Headquartered State (HQ State) of the new owner.
+    3. The domain name of the new company.
+    4. Previous owner/developer (e.g. Waypoint Residential) and previous management.
+    5. Rebrand details (e.g. Mason Augusta / The Mason).
+    6. Transaction metrics: Purchase Price, Occupancy at sale, Unit count, Brokers involved.
+    7. Article or press release URLs confirming these facts.
+
+    CRITICAL INSTRUCTION:
+    Rely strictly on live search results for commercial real estate transactions. Do not fabricate or confuse site history.
 
     OUTPUT FORMAT REQUIREMENT:
-    Return your response strictly in the following vertical layout with exact line breaks, headers, and bullet points. Do not deviate from this layout.
+    Return your response strictly in the following vertical layout with exact line breaks, headers, and bullet points:
 
     ### 📋 Property Transition Research Note
     **Property:** {prop_name} ({address})
 
     **Research Summary** 
-    [Insert 2-3 sentence overview of the transition]
+    [Insert 2-3 sentence overview of the acquisition, including transaction price, unit count, and buyer/seller]
 
     **Ownership & Management**
     * **Current Owner:** [Owner Name]
-    * **Previous Owner:** [Previous Owner Name if found, otherwise Unknown]
+    * **Previous Owner:** [Previous Owner/Developer Name]
     * **New Owner HQ State:** [City, State of HQ]
     * **Current Manager:** [Current Manager Name]
     * **Previous Manager:** {prev_manager}
 
     **HubSpot Info**
-    * **Company Domain:** [e.g., sentinelcorp.com]
+    * **Company Domain:** [e.g., southwoodrealty.com]
     * **Account Executive:** [Look up in HubSpot manually]
 
     **Property Details & Context**
-    * **Rebrand Status:** [Details on rebrand or 'No rebrand identified']
-    * **Value-Add / Renovations:** [Details on renovations or 'None identified']
-    * **Transaction Context:** [Details on acquisition/development]
+    * **Rebrand Status:** [Details on primary/secondary branding]
+    * **Value-Add / Renovations:** [Details on property status/renovations]
+    * **Transaction Context:** [Details on purchase price, brokerage, occupancy, multi-phase expansion]
 
     **Sources/Evidence:**
     * [Article/Press Release Title]: [URL]
     * [Article/Press Release Title]: [URL]
     """
     
-    # Supported production models order
     models_to_try = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
     
+    # Configure Google Search Grounding
+    config = types.GenerateContentConfig(
+        tools=[{"google_search": {}}]
+    )
+
     for model_id in models_to_try:
         try:
             response = client.models.generate_content(
                 model=model_id,
                 contents=prompt,
+                config=config,
             )
             return response.text
         except Exception as e:
             if "429" in str(e) or "ResourceExhausted" in str(e):
                 time.sleep(3)
                 continue
-            elif "404" in str(e):
-                continue
             else:
                 continue
 
-    # Final attempt fallback
+    # Fallback
     response = client.models.generate_content(
         model='gemini-3.5-flash',
         contents=prompt,
+        config=config,
     )
     return response.text
 
@@ -129,7 +139,7 @@ opportunity_input = st.text_input("Opportunity Name (e.g., Mason Augusta / SM Tr
 
 if st.button("Generate Research Note"):
     if opportunity_input:
-        with st.spinner("🔍 Reading sheet and conducting web research..."):
+        with st.spinner("🔍 Reading sheet and conducting grounded web research..."):
             
             prop_data = get_property_data_from_sheet(opportunity_input)
             
@@ -147,7 +157,7 @@ if st.button("Generate Research Note"):
                 
                 prev_manager = cols.get('previous sop') or cols.get('previous manager') or 'Unknown'
                 
-                # Run Gemini Research
+                # Run Gemini Research with Search Grounding
                 final_note = generate_research_note(prop_name, address, prev_manager)
                 
                 st.success("Research Complete! Click the copy button in the top right of the box below.")

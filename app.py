@@ -3,7 +3,6 @@ import pandas as pd
 import time
 from google import genai
 from google.genai import types
-from google.genai import errors
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -47,27 +46,24 @@ def get_property_data_from_sheet(search_term):
 
 def generate_research_note(prop_name, address, prev_manager):
     """
-    Prompts Gemini with Google Search Grounding using gemini-3.6-flash 
-    to research real-time news/data and return a vertically formatted note.
+    Prompts Gemini 3.6 Flash with Search Grounding to research real-time CRE news/data
+    and return a vertically formatted note with HQ state and source links.
     """
     prompt = f"""
-    Act as a Commercial Real Estate Research Analyst. 
-    Perform a targeted live web search for actual CRE transaction articles, brokerage press releases (Cushman & Wakefield, JLL, CBRE, REBusinessOnline, Connect CRE), and property records for:
+    Act as a Senior Commercial Real Estate Research Analyst. 
+    Perform a live, targeted web search for actual CRE transaction articles, press releases (Cushman & Wakefield, JLL, CBRE, REBusinessOnline, Connect CRE), and property listings for:
     - Opportunity / Property Name: {prop_name}
-    - Address/Location: {address}
-    - Previous/Known Manager: {prev_manager}
+    - Location/Address: {address}
+    - Previous Manager / SOP: {prev_manager}
 
-    Required Research Targets:
-    1. CURRENT OWNER & MANAGER: Identify the buyer/purchaser (e.g. Southwood Realty Co.) and current property manager.
-    2. PREVIOUS OWNER & DEVELOPER: Identify the seller (e.g. Waypoint Residential) and former management/license account (e.g. Greystar).
-    3. NEW OWNER HQ STATE: Corporate Headquarters location of buyer (City, State).
-    4. COMPANY DOMAIN: Official domain name of current owner/manager.
-    5. TRANSACTION METRICS: Sale/Purchase Price (e.g. $87M), transaction date, unit count (e.g. 462 units), occupancy rate at sale (e.g. 95%), and listing brokers (e.g. Cushman & Wakefield).
+    TARGET RESEARCH REQUIREMENTS:
+    1. CURRENT OWNER & MANAGER: Find the real buyer (e.g., Southwood Realty Co.) and current property management.
+    2. PREVIOUS OWNER & DEVELOPER: Find the seller/developer (e.g., Waypoint Residential) and previous management/license account (e.g., Greystar).
+    3. NEW OWNER HQ STATE: Corporate HQ location of buyer (City, State).
+    4. COMPANY DOMAIN: Domain name of current owner (e.g., southwoodrealty.com).
+    5. TRANSACTION METRICS: Purchase Price (e.g., $87M), sale date, unit count (e.g., 462 units), occupancy rate at sale (e.g., 95%), and listing brokers (e.g., Cushman & Wakefield).
     6. BRANDING / REBRAND: Note primary branding (Mason Augusta) and secondary branding (The Mason).
-    7. SOURCES / EVIDENCE: Exact article/press release URLs.
-
-    CRITICAL INSTRUCTION:
-    Rely strictly on live search results for commercial real estate transactions. Do not fabricate or confuse site history.
+    7. SOURCES / EVIDENCE: Include exact web link URLs found in your search.
 
     OUTPUT FORMAT REQUIREMENT:
     Return strictly in the following vertical layout with exact line breaks, headers, and bullet points:
@@ -99,34 +95,31 @@ def generate_research_note(prop_name, address, prev_manager):
     * [Article/Press Release Title]: [URL]
     """
     
-    # Enable Google Search Grounding Tool
+    # Configure Google Search Grounding Tool
     config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())]
     )
 
-    models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
-
-    for model_id in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model_id,
-                contents=prompt,
-                config=config,
-            )
-            return response.text
-        except Exception:
-            time.sleep(2)
-            continue
-
-    # Fallback attempt without grounding tools
     try:
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=prompt,
+            config=config,
         )
-        return response.text
-    except Exception as final_e:
-        return f"Error executing research generation: {str(final_e)}"
+        if response and response.text:
+            return response.text
+    except Exception as e:
+        st.warning(f"Grounded search note: {e}")
+
+    # Fallback call if tool-grounding call returns empty or times out
+    try:
+        fallback_response = client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=prompt,
+        )
+        return fallback_response.text if fallback_response.text else "Unable to generate research response."
+    except Exception as fallback_e:
+        return f"Error executing research generation: {str(fallback_e)}"
 
 # -----------------------------------------
 # 3. STREAMLIT USER INTERFACE

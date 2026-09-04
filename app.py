@@ -104,10 +104,13 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     TARGET CRE EXTRACT INSTRUCTIONS:
     1. Identify Current Owner / Holding Entity (e.g., Breit Mf Lumiere Chandler LLC / Blackstone BREIT).
     2. Identify Current Property Manager (e.g., AIR Communities / Apartment Income REIT Corp.).
-    3. Identify Previous Owner/Developer and Previous Manager if present in search data or sheet parameters.
-    4. Identify New Owner HQ State (e.g., New York, NY for Blackstone or Denver, CO for AIR Communities).
-    5. Identify Company Domain (e.g., aircommunities.com or breit.com).
-    6. Summarize transaction context, unit count, and rebranding details.
+    3. Identify New Owner Corporate Headquarters State (e.g., New York, NY for Blackstone).
+    4. Identify Current Manager Corporate Headquarters State (e.g., Denver, CO for AIR Communities).
+    5. Identify Previous Owner/Developer and Previous Manager if present in search data or sheet parameters.
+    6. Identify Company Domain (e.g., aircommunities.com or breit.com).
+    7. Summarize transaction context, unit count, and rebranding details.
+    8. PROPERTY OVERVIEW: ALWAYS include an Overview bullet point detailing physical features (e.g., "336-unit garden-style community featuring resort-style pools, fitness centers, and modern interior finishes typical of portfolio standards.").
+    9. VALUE-ADD / RENOVATIONS: Only list specific renovation or capital expenditure plans if explicitly found in research. If no specific renovation details are found in research, strictly state "N/A".
 
     HUBSPOT NOTE FORMAT REQUIREMENT:
     Return strictly in the following vertical layout without raw markdown symbols like ### or **:
@@ -123,6 +126,7 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     • Previous Owner: {prev_owner if prev_owner != 'Unknown' else '[Previous Owner / Developer Name]'}
     • New Owner HQ State: [City, State of HQ]
     • Current Manager: [Current Property Manager, e.g. AIR Communities]
+    • Current Manager HQ State: [City, State of HQ, e.g. Denver, CO]
     • Previous Manager: {prev_sop if prev_sop != 'Unknown' else '[Previous Manager Name]'}
 
     HubSpot Info:
@@ -131,13 +135,14 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
 
     Property Details & Context:
     • Rebrand Status: [Primary and secondary community branding]
-    • Value-Add / Renovations: [Property condition, amenities, unit count]
+    • Overview: [Property physical details, e.g. 336-unit garden-style community featuring resort-style pools, fitness center, and modern finishes]
+    • Value-Add / Renovations: [Specific renovation plans if explicitly found in research; otherwise state N/A]
     • Transaction Context: [Acquisition details, price, sale date, or management transition]
 
     Sources & Evidence:
     """ + ("\n".join(sources[:4]) if sources else "• Search Public Records: https://www.aircommunities.com")
 
-    # List of models to attempt with fallback if 503 occurs
+    # List of models to attempt with fallback
     models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
 
     for model_id in models_to_try:
@@ -152,10 +157,10 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
             except Exception as e:
                 err_msg = str(e)
                 if "503" in err_msg or "UNAVAILABLE" in err_msg or "429" in err_msg:
-                    time.sleep(2 * (attempt + 1))  # Pause 2s, 4s before retrying
+                    time.sleep(2 * (attempt + 1))
                     continue
                 else:
-                    break  # Try next model in list
+                    break
 
     return "Google AI servers are currently experiencing high demand. Please wait 10 seconds and click Generate again."
 

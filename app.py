@@ -72,8 +72,8 @@ def search_web_for_property(prop_clean_name, street, city, state):
 
 def get_property_data_from_sheet(search_term):
     """
-    Reads Google Sheet CSV and performs tokenized matching against Opportunity Name 
-    and Property Name to ensure 100% row match accuracy.
+    Reads Google Sheet CSV and performs row matching safely converting all cells to string.
+    Checks Opportunity Name, Property Name, and row-wide tokens.
     """
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
@@ -83,7 +83,7 @@ def get_property_data_from_sheet(search_term):
         clean_target = clean_search_term(search_term).lower()
         target_tokens = [t for t in clean_target.split() if len(t) > 2]
         
-        # 1. Exact or Substring match on Opportunity/Property Name columns
+        # 1. Direct match on Opportunity Name or Property Name columns
         for _, row in df.iterrows():
             opp_name = str(row.get('Opportunity Name', '')).lower()
             prop_name = str(row.get('Property Name', '')).lower()
@@ -91,7 +91,7 @@ def get_property_data_from_sheet(search_term):
             if clean_target in opp_name or clean_target in prop_name:
                 return row
 
-        # 2. Tokenized match (all words present in Opportunity or Property Name)
+        # 2. Tokenized match (all key words present in Opportunity or Property Name)
         for _, row in df.iterrows():
             opp_name = str(row.get('Opportunity Name', '')).lower()
             prop_name = str(row.get('Property Name', '')).lower()

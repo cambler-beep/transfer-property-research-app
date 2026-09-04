@@ -3,7 +3,6 @@ import pandas as pd
 import time
 import re
 from google import genai
-from duckduckgo_search import DDGS
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -33,8 +32,9 @@ def clean_search_term(raw_name):
 def search_web_for_property(prop_clean_name, street, city, state):
     """
     Executes Python-side DuckDuckGo searches for CRE property records, 
-    public tax filings, and management listings without consuming Gemini API search tool quota.
+    public tax filings, and management listings.
     """
+    from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = [
@@ -137,21 +137,27 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     Sources & Evidence:
     """ + ("\n".join(sources[:4]) if sources else "• Search Public Records: https://www.aircommunities.com")
 
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model='gemini-3.6-flash',
-                contents=prompt,
-            )
-            return response.text
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                time.sleep(5)
-                continue
-            else:
-                return f"Error generating research note: {str(e)}"
-                
-    return "API rate limit reached. Please try again in 1 minute."
+    # List of models to attempt with fallback if 503 occurs
+    models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
+
+    for model_id in models_to_try:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_id,
+                    contents=prompt,
+                )
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                err_msg = str(e)
+                if "503" in err_msg or "UNAVAILABLE" in err_msg or "429" in err_msg:
+                    time.sleep(2 * (attempt + 1))  # Pause 2s, 4s before retrying
+                    continue
+                else:
+                    break  # Try next model in list
+
+    return "Google AI servers are currently experiencing high demand. Please wait 10 seconds and click Generate again."
 
 # -----------------------------------------
 # 3. STREAMLIT USER INTERFACE

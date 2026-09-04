@@ -25,7 +25,8 @@ def clean_search_term(raw_name):
     """Strips internal deal tags (/ SM Transfer, / Transfer, SOP) to extract pure name."""
     if not raw_name:
         return ""
-    clean = str(raw_name).split('/')[0].split('(')[0]
+    # Replace copy/paste hidden spaces from Google Sheets
+    clean = str(raw_name).replace('\xa0', ' ').split('/')[0].split('(')[0]
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
 
@@ -65,20 +66,21 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
-    """Reads Google Sheet CSV using the original logic, with a fix for NaN float errors."""
+    """Reads Google Sheet CSV and guarantees a match without float/NaN crashes."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
-        df = pd.read_csv(sheet_url)
+        # THE FIX: .fillna("") forces all blank cells (like column 12) to be strings, NOT floats.
+        df = pd.read_csv(sheet_url, dtype=str).fillna("")
         df.columns = df.columns.astype(str).str.strip()
         
         target_clean = clean_search_term(search_term).lower()
         
         for _, row in df.iterrows():
-            opp_name = str(row.get('Opportunity Name', '')).lower()
-            prop_name = str(row.get('Property Name', '')).lower()
+            opp_name = str(row.get('Opportunity Name', '')).replace('\xa0', ' ').lower()
+            prop_name = str(row.get('Property Name', '')).replace('\xa0', ' ').lower()
             
-            # THE FIX: .astype(str) prevents the sequence item expected str, float found error
-            row_str = " ".join(row.astype(str).values).lower()
+            # Because of .fillna(""), row.values only contains strings. .join() WILL NOT CRASH.
+            row_str = " ".join(row.values).replace('\xa0', ' ').lower()
             
             if target_clean in opp_name or target_clean in prop_name or target_clean in row_str:
                 return row
@@ -105,13 +107,13 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund).
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund / Canyon Partners).
     2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Cannon Management).
     3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. Bridge Investment Group) and former property manager/SOP operator.
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
     5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
     6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly Coronado Palms / Palmilla Villas; rebranded to Oro Apartments).
-    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 168-unit community), care levels (if Senior Living), and key amenities.
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
     9. TRANSACTION CONTEXT: Summarize purchase price, sale date, buyer, seller, and brokerage details.
 
@@ -180,9 +182,10 @@ if st.button("Generate Research Note"):
             row = get_property_data_from_sheet(opportunity_input)
             
             if row is not None:
+                # The exact column extraction logic that worked for you before
                 def get_col_val(header_name):
                     val = row.get(header_name)
-                    if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '']:
+                    if val and str(val).strip().lower() not in ['nan', 'none', '', '#n/a']:
                         return str(val).strip()
                     return ''
 

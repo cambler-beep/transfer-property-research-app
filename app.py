@@ -22,26 +22,31 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
 def clean_search_term(raw_name):
-    """Clean internal deal tags like '/ Transfer', 'Transfer', 'SOP' from search terms."""
+    """
+    Cleans internal deal tags (e.g., '/ Transfer', '/ SM/ AI Transfer', 'SOP') 
+    from search terms so search engines find exact public property press releases.
+    """
     if not raw_name:
         return ""
     clean = raw_name.split('/')[0].split('(')[0]
-    clean = re.sub(r'(?i)\b(transfer|sop|retention|deal)\b', '', clean)
+    clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
     """
-    Executes Python-side DuckDuckGo searches for CRE property records, 
-    public tax filings, and management listings.
+    Executes a multi-angle search designed to capture Multifamily, Senior Living, 
+    and Commercial Real Estate deal publications (Traded, REBusinessOnline, Connect CRE, etc.).
     """
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
-    queries = [
-        f'"{base_name}" "{city}" owner manager REIT LLC',
-        f'"{street}" "{city}" property owner',
-        f'"{base_name}" "managed by" OR "AIR Communities" OR "Cortland" OR "Greystar"'
-    ]
+    queries = []
+    if street and city:
+        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR operator')
+    if base_name and city:
+        queries.append(f'"{base_name}" "{city}" sale OR sold OR rebranded OR "$"')
+    if base_name:
+        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "Assisted Living" OR "managed by"')
     
     results_text = ""
     sources = []
@@ -49,7 +54,7 @@ def search_web_for_property(prop_clean_name, street, city, state):
     
     try:
         with DDGS() as ddgs:
-            for q in queries:
+            for q in queries[:3]:
                 results = list(ddgs.text(q, max_results=4))
                 for r in results:
                     url = r.get('href', '').strip()
@@ -66,6 +71,7 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
+    """Reads Google Sheet CSV and matches rows based on exact or substring search terms."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url)
@@ -73,7 +79,6 @@ def get_property_data_from_sheet(search_term):
         
         target_clean = clean_search_term(search_term).lower()
         
-        # Search row by row for exact or substring matches in Opportunity/Property Name
         for _, row in df.iterrows():
             opp_name = str(row.get('Opportunity Name', '')).lower()
             prop_name = str(row.get('Property Name', '')).lower()
@@ -86,11 +91,12 @@ def get_property_data_from_sheet(search_term):
     return None
 
 def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
+    """Generates a structured, clean CRE research note for Multifamily & Senior Living assets."""
     clean_name = clean_search_term(prop_name)
     
     prompt = f"""
-    Act as a Senior Commercial Real Estate (CRE) Research Analyst.
-    Synthesize transaction and ownership details strictly using the provided live search research data.
+    Act as a Senior Commercial Real Estate (CRE) & Senior Housing Research Analyst.
+    Synthesize property transaction, ownership, management/operator, and rebranding details strictly using the provided search research data.
 
     SEARCH RESEARCH DATA:
     {search_data}
@@ -101,16 +107,16 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Owner / Account: {prev_owner}
     - Previous Manager / SOP: {prev_sop}
 
-    TARGET CRE EXTRACT INSTRUCTIONS:
-    1. Identify Current Owner / Holding Entity (e.g., Breit Mf Lumiere Chandler LLC / Blackstone BREIT).
-    2. Identify Current Property Manager (e.g., AIR Communities / Apartment Income REIT Corp.).
-    3. Identify New Owner Corporate Headquarters State (e.g., New York, NY for Blackstone).
-    4. Identify Current Manager Corporate Headquarters State (e.g., Denver, CO for AIR Communities).
-    5. Identify Previous Owner/Developer and Previous Manager if present in search data or sheet parameters.
-    6. Identify Company Domain (e.g., aircommunities.com or breit.com).
-    7. Summarize transaction context, unit count, and rebranding details.
-    8. PROPERTY OVERVIEW: ALWAYS include an Overview bullet point detailing physical features (e.g., "336-unit garden-style community featuring resort-style pools, fitness centers, and modern interior finishes typical of portfolio standards.").
-    9. VALUE-ADD / RENOVATIONS: Only list specific renovation or capital expenditure plans if explicitly found in research. If no specific renovation details are found in research, strictly state "N/A".
+    TARGET INSTRUCTIONS:
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, or REIT.
+    2. CURRENT MANAGER / OPERATOR: Identify the active property manager, senior living operator, or operating entity (and CEO/Leadership if mentioned).
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator.
+    4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
+    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
+    6. REBRAND STATUS: Identify any name changes or rebranding (e.g., Formerly [Old Name]; rebranded to [New Name]).
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living: e.g. Assisted Living / Memory Care / Independent Living), and key amenities.
+    8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
+    9. TRANSACTION CONTEXT: Summarize purchase price (e.g. $23M), sale date, buyer, seller, and brokerage details.
 
     HUBSPOT NOTE FORMAT REQUIREMENT:
     Return strictly in the following vertical layout without raw markdown symbols like ### or **:
@@ -119,30 +125,30 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     Property: {clean_name} ({full_address})
 
     Research Summary:
-    [2-3 sentence overview of the ownership entity, management company, unit count, and transaction context]
+    [2-3 sentence overview of the acquisition/transition, buyer, seller, transaction price, unit/bed count, care levels if applicable, and rebranding details]
 
     Ownership & Management:
-    • Current Owner: [Owner Name / Holding LLC, e.g. Breit Mf Lumiere Chandler LLC / Blackstone BREIT]
-    • Previous Owner: {prev_owner if prev_owner != 'Unknown' else '[Previous Owner / Developer Name]'}
+    • Current Owner: [Owner Name / Holding Entity / Purchasing LLC]
+    • Previous Owner: {prev_owner if prev_owner != 'Unknown' else '[Previous Owner / Seller Name]'}
     • New Owner HQ State: [City, State of HQ]
-    • Current Manager: [Current Property Manager, e.g. AIR Communities]
-    • Current Manager HQ State: [City, State of HQ, e.g. Denver, CO]
+    • Current Manager: [Current Property Manager / Operating Company]
+    • Current Manager HQ State: [City, State of HQ]
     • Previous Manager: {prev_sop if prev_sop != 'Unknown' else '[Previous Manager Name]'}
 
     HubSpot Info:
-    • Company Domain: [Official domain, e.g. aircommunities.com]
+    • Company Domain: [Official domain name]
     • Account Executive: [Look up in HubSpot manually]
 
     Property Details & Context:
     • Rebrand Status: [Primary and secondary community branding]
-    • Overview: [Property physical details, e.g. 336-unit garden-style community featuring resort-style pools, fitness center, and modern finishes]
+    • Overview: [Property physical details, unit/bed count, care levels if senior living, building style, amenities]
     • Value-Add / Renovations: [Specific renovation plans if explicitly found in research; otherwise state N/A]
-    • Transaction Context: [Acquisition details, price, sale date, or management transition]
+    • Transaction Context: [Purchase price, sale date, seller, buyer, brokerage details, or operational transition]
 
     Sources & Evidence:
-    """ + ("\n".join(sources[:4]) if sources else "• Search Public Records: https://www.aircommunities.com")
+    """ + ("\n".join(sources[:4]) if sources else "• Search Public Records: https://www.google.com")
 
-    # List of models to attempt with fallback
+    # Retry logic with model fallback
     models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
 
     for model_id in models_to_try:
@@ -169,7 +175,7 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
 # -----------------------------------------
 st.write("Enter an Opportunity Name from your Google Sheet to run AI research and generate a ready-to-paste note.")
 
-opportunity_input = st.text_input("Opportunity Name (e.g., Lumiere Chandler / Transfer)")
+opportunity_input = st.text_input("Opportunity Name (e.g., Property Name / Transfer)")
 
 if st.button("Generate Research Note"):
     if opportunity_input:
@@ -194,11 +200,16 @@ if st.button("Generate Research Note"):
                 prev_owner = get_col_val('Previous License Account') or 'Unknown'
                 prev_sop = get_col_val('Previous SOP') or 'Unknown'
                 
-                # Build Address String
+                # Dynamic address builder with no hardcoded fallback cities
                 addr_parts = [p for p in [street, city, state, zip_code] if p]
-                full_address = ", ".join(addr_parts) if addr_parts else "Chandler, AZ"
+                if addr_parts:
+                    full_address = ", ".join(addr_parts)
+                elif city or state:
+                    full_address = ", ".join([p for p in [city, state] if p])
+                else:
+                    full_address = "Address Not Specified"
                 
-                # Execute Python-side web search
+                # Execute Python web search
                 search_data, sources = search_web_for_property(prop_name, street, city, state)
                 
                 # Generate research note

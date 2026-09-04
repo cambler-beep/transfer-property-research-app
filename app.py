@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import re
 from google import genai
 from duckduckgo_search import DDGS
 
@@ -21,34 +22,47 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
+def clean_property_name_for_search(raw_name):
+    """
+    Strips out internal deal suffixes like '/ Transfer', 'Transfer', 
+    and special characters so web search finds exact CRE press releases.
+    """
+    clean_name = raw_name.split('/')[0].split('(')[0]
+    clean_name = re.sub(r'(?i)\b(transfer|sop|retention|deal)\b', '', clean_name)
+    return clean_name.strip()
+
 def search_web_for_property(prop_name, street, city, state):
     """
-    Executes a targeted search using the exact property name, street address, 
-    and city/state extracted from your Google Sheet.
+    Executes multiple targeted searches (Name + Location, Address + Location)
+    to guarantee CRE press releases are retrieved.
     """
-    base_name = prop_name.split('/')[0].replace('Transfer', '').strip()
+    base_name = clean_property_name_for_search(prop_name)
     
-    # Priority search query construction
+    # Generate search queries
+    queries = []
+    if city and state:
+        queries.append(f'"{base_name}" "{city}" sale OR acquired OR owner')
     if street and city:
-        query = f'"{base_name}" "{street}" "{city}" owner manager acquisition sale'
-    elif city and state:
-        query = f'"{base_name}" "{city}" "{state}" owner manager acquisition sale'
-    else:
-        query = f'"{base_name}" owner manager acquisition sale'
-        
+        queries.append(f'"{street}" "{city}" sale OR acquisition')
+    queries.append(f'"{base_name}" acquisition OR sale OR rebranding')
+    
     results_text = ""
     sources = []
+    seen_urls = set()
     
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=6))
-            for r in results:
-                title = r.get('title', '').strip()
-                snippet = r.get('body', '').strip()
-                url = r.get('href', '').strip()
-                if url:
-                    results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
-                    sources.append(f"• {title}: {url}")
+            for q in queries[:2]:
+                results = list(ddgs.text(q, max_results=5))
+                for r in results:
+                    url = r.get('href', '').strip()
+                    title = r.get('title', '').strip()
+                    snippet = r.get('body', '').strip()
+                    
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
+                        sources.append(f"• {title}: {url}")
     except Exception:
         results_text = "Live search unavailable."
         
@@ -58,10 +72,9 @@ def get_property_data_from_sheet(search_term):
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url)
-        # Strip trailing/leading spaces from column headers
         df.columns = df.columns.astype(str).str.strip()
         
-        # Search for exact term across all columns
+        # Search across all columns
         mask = df.apply(lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(), axis=1)
         matching_rows = df[mask]
         if not matching_rows.empty:
@@ -73,7 +86,7 @@ def get_property_data_from_sheet(search_term):
 def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
     prompt = f"""
     Act as a Senior Commercial Real Estate Research Analyst.
-    Extract the real transition and acquisition details strictly using the provided live web research data. Do not invent details or reuse data from unrelated properties.
+    Extract the real transition and acquisition details strictly using the provided live web research data.
 
     LIVE WEB SEARCH RESULTS:
     {search_data}
@@ -90,10 +103,10 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     3. Identify New Owner HQ State (e.g., Houston, TX for Camden).
     4. Identify Rebrand or Community Name changes (e.g., Cortland Santos Flats -> Camden Brandon).
     5. Extract transaction details, purchase price, sale date, and unit count if present in search data.
-    6. If a piece of data is truly unknown in search results, state "Unknown" or "Not specified in press release".
+    6. If a piece of data is truly unknown in search results, state "Unknown".
 
     HUBSPOT NOTE FORMAT REQUIREMENT:
-    Return strictly in the following vertical layout:
+    Return strictly in the following vertical layout without raw markdown symbols like ### or **:
 
     📋 Property Transition Research Note
     Property: {prop_name} ({full_address})
@@ -150,14 +163,12 @@ if st.button("Generate Research Note"):
             row = get_property_data_from_sheet(opportunity_input)
             
             if row is not None:
-                # Helper to fetch string safely by exact header name
                 def get_col_val(header_name):
                     val = row.get(header_name)
                     if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '']:
                         return str(val).strip()
                     return ''
 
-                # Exact column header mapping from Google Sheet
                 opp_name = get_col_val('Opportunity Name') or opportunity_input
                 prop_name = get_col_val('Property Name') or opp_name
                 street = get_col_val('Street')
@@ -168,14 +179,14 @@ if st.button("Generate Research Note"):
                 prev_owner = get_col_val('Previous License Account') or 'Unknown'
                 prev_sop = get_col_val('Previous SOP') or 'Unknown'
                 
-                # Build Address String
+                # Full Address
                 addr_parts = [p for p in [street, city, state, zip_code] if p]
                 full_address = ", ".join(addr_parts) if addr_parts else "Location Not Specified"
                 
-                # Execute web search using exact Property Name, Street, City, and State
+                # Web Search
                 search_data, sources = search_web_for_property(prop_name, street, city, state)
                 
-                # Generate research note
+                # Generate Note
                 final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources)
                 
                 st.success("Research Complete! Click the copy button in the top right of the box below.")

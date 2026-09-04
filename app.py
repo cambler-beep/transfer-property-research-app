@@ -23,8 +23,8 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 def clean_search_term(raw_name):
     """
-    Strips internal deal tags (e.g., '/ SM Transfer', '/ Transfer', 'SOP')
-    to extract the core property name for sheet lookup and web research.
+    Cleans internal deal tags (e.g., '/ SM Transfer', '/ Transfer', 'SOP') 
+    to extract the pure property name for sheet matching and web queries.
     """
     if not raw_name:
         return ""
@@ -34,19 +34,19 @@ def clean_search_term(raw_name):
 
 def search_web_for_property(prop_clean_name, street, city, state):
     """
-    Executes Python-side DuckDuckGo searches targeted for Multifamily, CRE,
-    and Senior Living transactions.
+    Executes Python-side DuckDuckGo searches designed for Multifamily, 
+    Senior Living, and CRE deal publications.
     """
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = []
     if street and city:
-        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR "$"')
+        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR manager')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded')
+        queries.append(f'"{base_name}" "{city}" sale OR acquired OR owner OR manager OR rebranded')
     if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
+        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "Assisted Living" OR "apartments"')
     
     results_text = ""
     sources = []
@@ -72,17 +72,20 @@ def search_web_for_property(prop_clean_name, street, city, state):
 
 def get_property_data_from_sheet(search_term):
     """
-    Reads Google Sheet CSV and performs row matching safely converting all cells to string.
+    Reads Google Sheet CSV and performs robust row matching.
+    Guarantees address extraction by checking Opportunity Name, Property Name,
+    and individual keyword tokens.
     """
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
+        # Load CSV forcing all columns to string type to prevent NaN/float errors
         df = pd.read_csv(sheet_url, dtype=str)
         df.columns = df.columns.astype(str).str.strip()
         
         clean_target = clean_search_term(search_term).lower()
-        first_word = clean_target.split()[0] if clean_target else ""
+        target_tokens = [t for t in clean_target.split() if len(t) > 2]
         
-        # 1. Exact or Substring match on Opportunity Name or Property Name
+        # 1. Exact or Substring match on Opportunity Name or Property Name columns
         for _, row in df.iterrows():
             opp_name = str(row.get('Opportunity Name', '')).lower()
             prop_name = str(row.get('Property Name', '')).lower()
@@ -90,18 +93,20 @@ def get_property_data_from_sheet(search_term):
             if clean_target in opp_name or clean_target in prop_name:
                 return row
 
-        # 2. Search by first primary word (e.g., "Coronado" or "Watermark")
-        if len(first_word) > 3:
+        # 2. Key-token match (e.g. matches "Coronado" and "Palms" anywhere in Opportunity or Property Name)
+        if target_tokens:
             for _, row in df.iterrows():
                 opp_name = str(row.get('Opportunity Name', '')).lower()
                 prop_name = str(row.get('Property Name', '')).lower()
-                if first_word in opp_name or first_word in prop_name:
+                row_str = f"{opp_name} {prop_name}"
+                
+                if all(token in row_str for token in target_tokens):
                     return row
 
-        # 3. Search across entire row string
+        # 3. Fallback search across all row values
         for _, row in df.iterrows():
             row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
-            if clean_target in row_str or (len(first_word) > 3 and first_word in row_str):
+            if clean_target in row_str or (target_tokens and all(token in row_str for token in target_tokens)):
                 return row
 
     except Exception as e:
@@ -109,7 +114,7 @@ def get_property_data_from_sheet(search_term):
     return None
 
 def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
-    """Generates a structured, clean CRE research note for Multifamily & Senior Living assets."""
+    """Generates a clean, structured CRE research note for Multifamily & Senior Living assets."""
     clean_name = clean_search_term(prop_name)
     
     prompt = f"""

@@ -46,7 +46,7 @@ def generate_research_note(prop_name, address, prev_manager):
     """
     Prompts Gemini to research the web and return 
     a vertically formatted note with HQ state and source links.
-    Includes rate limit retry logic.
+    Includes retry logic for API limits.
     """
     prompt = f"""
     Act as a Commercial Real Estate Research Analyst. 
@@ -93,25 +93,21 @@ def generate_research_note(prop_name, address, prev_manager):
     * [Article/Press Release Title]: [URL]
     """
     
-    # Try models with retries on rate limits
-    models_to_try = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash']
+    # Standard official Gemini 1.5 Flash model
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
-    for model_name in models_to_try:
+    # Retry up to 3 times if rate-limited
+    for attempt in range(3):
         try:
-            model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
             if "ResourceExhausted" in str(e) or "429" in str(e):
-                time.sleep(3)  # Pause to let the rate-limit window reset
-                continue
+                time.sleep(4 * (attempt + 1))  # Pause 4s, 8s, 12s
             else:
-                # If non-quota error, retry with next model
-                continue
-
-    # Fallback attempt after brief delay
-    time.sleep(5)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+                raise e
+                
+    # Final attempt
     response = model.generate_content(prompt)
     return response.text
 

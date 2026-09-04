@@ -100,11 +100,12 @@ def generate_research_note(prop_name, address, prev_manager):
     * [Article/Press Release Title]: [URL]
     """
     
-    models_to_try = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
+    # Official supported model names in google-genai
+    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash']
     
-    # Configure Google Search Grounding
+    # Correct SDK configuration for Google Search Grounding
     config = types.GenerateContentConfig(
-        tools=[{"google_search": {}}]
+        tools=[types.Tool(google_search=types.GoogleSearch())]
     )
 
     for model_id in models_to_try:
@@ -122,11 +123,10 @@ def generate_research_note(prop_name, address, prev_manager):
             else:
                 continue
 
-    # Fallback
+    # Fallback to standard request without tool if grounding tool isn't enabled for API key
     response = client.models.generate_content(
-        model='gemini-3.5-flash',
+        model='gemini-2.5-flash',
         contents=prompt,
-        config=config,
     )
     return response.text
 
@@ -157,7 +157,7 @@ if st.button("Generate Research Note"):
                 
                 prev_manager = cols.get('previous sop') or cols.get('previous manager') or 'Unknown'
                 
-                # Run Gemini Research with Search Grounding
+                # Run Gemini Research
                 final_note = generate_research_note(prop_name, address, prev_manager)
                 
                 st.success("Research Complete! Click the copy button in the top right of the box below.")

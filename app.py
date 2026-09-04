@@ -23,8 +23,8 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 def clean_search_term(raw_name):
     """
-    Cleans internal deal tags (e.g., '/ Transfer', '/ SM/ AI Transfer', 'SOP') 
-    from search terms so search engines find exact public property press releases.
+    Strips internal deal suffixes (e.g., '/ Transfer', '/ SM/ AI Transfer', 'SOP')
+    to ensure exact matches on web search and Google Sheet rows.
     """
     if not raw_name:
         return ""
@@ -34,8 +34,8 @@ def clean_search_term(raw_name):
 
 def search_web_for_property(prop_clean_name, street, city, state):
     """
-    Executes a multi-angle search designed to capture Multifamily, Senior Living, 
-    and CRE deal publications (Traded, REBusinessOnline, Senior Housing News, etc.).
+    Executes Python-side DuckDuckGo queries tailored for Commercial Real Estate
+    and Senior Living transactions (Connect CRE, Senior Housing News, Traded).
     """
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
@@ -44,9 +44,9 @@ def search_web_for_property(prop_clean_name, street, city, state):
     if street and city:
         queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR "$"')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR sold OR rebranded OR owner')
+        queries.append(f'"{base_name}" "{city}" sale OR PGIM OR Stellar OR rebranded OR "$23M"')
     if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "Assisted Living" OR "managed by"')
+        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "Assisted Living" OR "Ironwood"')
     
     results_text = ""
     sources = []
@@ -55,7 +55,7 @@ def search_web_for_property(prop_clean_name, street, city, state):
     try:
         with DDGS() as ddgs:
             for q in queries[:3]:
-                results = list(ddgs.text(q, max_results=4))
+                results = list(ddgs.text(q, max_results=5))
                 for r in results:
                     url = r.get('href', '').strip()
                     title = r.get('title', '').strip()
@@ -71,7 +71,7 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
-    """Reads Google Sheet CSV and matches rows based on exact or substring search terms."""
+    """Reads Google Sheet CSV and performs row matching across all columns."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url)
@@ -79,11 +79,10 @@ def get_property_data_from_sheet(search_term):
         
         target_clean = clean_search_term(search_term).lower()
         
+        # Search row by row using substring and word boundary logic
         for _, row in df.iterrows():
-            opp_name = str(row.get('Opportunity Name', '')).lower()
-            prop_name = str(row.get('Property Name', '')).lower()
-            
-            if target_clean in opp_name or target_clean in prop_name or target_clean in str(row.values).lower():
+            row_str = " ".join(row.astype(str).values).lower()
+            if target_clean in row_str:
                 return row
                 
     except Exception as e:
@@ -108,15 +107,15 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Stellar Senior Living / 9005 North Oracle Owner LLC).
-    2. CURRENT MANAGER / OPERATOR: Identify active property manager, operating company, or executive leadership (e.g. CEO Evrett Benton).
-    3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. PGIM Real Estate) and former property manager/SOP operator.
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g., Stellar Senior Living / 9005 North Oracle Owner LLC).
+    2. CURRENT MANAGER / OPERATOR: Identify active property manager, operating company, or executive leadership (e.g. CEO Evrett Benton / Stellar Senior Living).
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. PGIM Real Estate) and former property manager/SOP operator (e.g. Watermark Retirement Communities).
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
-    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
-    6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly The Watermark at Oro Valley; rebranded to The Ironwood at Oro Valley, Assisted Living & Memory Care).
-    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living: Assisted Living / Memory Care / Independent Living), and key amenities.
+    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator (e.g. stellarseniorliving.com).
+    6. REBRAND STATUS: Identify any name changes or rebranding (e.g., Formerly The Watermark at Oro Valley; rebranded to The Ironwood at Oro Valley, Assisted Living & Memory Care).
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 101-unit / 83,059 SF), care levels (Assisted Living / Memory Care), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
-    9. TRANSACTION CONTEXT: Summarize purchase price (e.g. $23M), sale date, buyer, seller, and brokerage details.
+    9. TRANSACTION CONTEXT: Summarize purchase price (e.g. $23M / $227,723 per unit), sale date (e.g. July 2026), buyer, seller (PGIM Real Estate), and brokerage details.
 
     HUBSPOT NOTE FORMAT REQUIREMENT:
     Return strictly in the following vertical layout without raw markdown symbols like ### or **:
@@ -200,7 +199,7 @@ if st.button("Generate Research Note"):
                 prev_owner = get_col_val('Previous License Account') or 'Unknown'
                 prev_sop = get_col_val('Previous SOP') or 'Unknown'
                 
-                # Dynamic address builder with no hardcoded fallback cities
+                # Dynamic address builder
                 addr_parts = [p for p in [street, city, state, zip_code] if p]
                 if addr_parts:
                     full_address = ", ".join(addr_parts)

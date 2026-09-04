@@ -1,7 +1,8 @@
 import streamlit as st
-import google.generativeai as genai
 import pandas as pd
 import time
+from google import genai
+from google.genai import errors
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -16,26 +17,12 @@ if not GEMINI_API_KEY:
     st.error("Please add your GEMINI_API_KEY in the Streamlit Secrets settings.")
     st.stop()
 
-genai.configure(api_key=GEMINI_API_KEY)
+# Initialize Google GenAI client
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # -----------------------------------------
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
-def get_available_model():
-    """
-    Finds an active available model for your API Key dynamically
-    to prevent 404 NotFound model errors.
-    """
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'flash' in m.name or 'pro' in m.name:
-                    return m.name
-        # Fallback default if list_models isn't permitted
-        return "models/gemini-2.5-flash"
-    except Exception:
-        return "models/gemini-2.5-flash"
-
 def get_property_data_from_sheet(search_term):
     """
     Reads Google Sheet CSV export link, cleans column names, 
@@ -61,7 +48,6 @@ def generate_research_note(prop_name, address, prev_manager):
     """
     Prompts Gemini to research the web and return 
     a vertically formatted note with HQ state and source links.
-    Includes auto model selection & retry logic for rate limits.
     """
     prompt = f"""
     Act as a Commercial Real Estate Research Analyst. 
@@ -108,24 +94,30 @@ def generate_research_note(prop_name, address, prev_manager):
     * [Article/Press Release Title]: [URL]
     """
     
-    selected_model_name = get_available_model()
-    model = genai.GenerativeModel(selected_model_name)
+    # Supported production models order
+    models_to_try = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
     
-    # Retry up to 3 times if rate-limited
-    for attempt in range(3):
+    for model_id in models_to_try:
         try:
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model=model_id,
+                contents=prompt,
+            )
             return response.text
         except Exception as e:
-            if "ResourceExhausted" in str(e) or "429" in str(e):
-                time.sleep(4 * (attempt + 1))  # Pause 4s, 8s, 12s
+            if "429" in str(e) or "ResourceExhausted" in str(e):
+                time.sleep(3)
+                continue
+            elif "404" in str(e):
+                continue
             else:
-                # If specific model error occurs, try fallback
-                fallback_model = genai.GenerativeModel('models/gemini-2.5-flash')
-                response = fallback_model.generate_content(prompt)
-                return response.text
-                
-    response = model.generate_content(prompt)
+                continue
+
+    # Final attempt fallback
+    response = client.models.generate_content(
+        model='gemini-3.5-flash',
+        contents=prompt,
+    )
     return response.text
 
 # -----------------------------------------

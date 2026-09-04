@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import time
 import re
-import difflib
 from google import genai
 
 # -----------------------------------------
@@ -22,23 +21,14 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
-def normalize_text(text):
-    """
-    Cleans hidden unicode non-breaking spaces (\xa0), tab characters, 
-    and trailing whitespace introduced when copying directly from Google Sheets.
-    """
-    if not text:
-        return ""
-    clean = re.sub(r'[\xa0\s]+', ' ', str(text)).strip()
-    return clean
-
 def clean_search_term(raw_name):
     """
     Strips internal deal suffixes (e.g., '/ SM Transfer', '/ Transfer', 'SOP')
-    to extract the pure property name for sheet matching and web queries.
+    to extract the core property name for sheet lookup and web research.
     """
-    normalized = normalize_text(raw_name)
-    clean = normalized.split('/')[0].split('(')[0]
+    if not raw_name:
+        return ""
+    clean = str(raw_name).replace('\xa0', ' ').split('/')[0].split('(')[0]
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
 
@@ -82,59 +72,56 @@ def search_web_for_property(prop_clean_name, street, city, state):
 
 def get_property_data_from_sheet(search_term):
     """
-    Reads Google Sheet CSV and performs robust row matching by normalizing
-    hidden spaces and unicode characters.
+    Reads Google Sheet CSV using exact column headers and performs row matching.
     """
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
         df = pd.read_csv(sheet_url, dtype=str)
-        # Clean column headers
-        df.columns = [normalize_text(col) for col in df.columns]
         
-        raw_clean = normalize_text(search_term).lower()
+        raw_clean = str(search_term).replace('\xa0', ' ').strip().lower()
         target_clean = clean_search_term(search_term).lower()
         
-        # 1. Exact or Substring match on Opportunity Name or Property Name
+        # 1. Match directly against Opportunity Name or Property Name columns
         for _, row in df.iterrows():
-            opp_name = normalize_text(row.get('Opportunity Name', '')).lower()
-            prop_name = normalize_text(row.get('Property Name', '')).lower()
+            opp_name = str(row.get('Opportunity Name', '')).strip().lower()
+            prop_name = str(row.get('Property Name', '')).strip().lower()
             
             if target_clean in opp_name or target_clean in prop_name or opp_name in target_clean or prop_name in target_clean:
                 return row
             if raw_clean in opp_name or raw_clean in prop_name:
                 return row
 
-        # 2. Token overlap check (e.g., matches "Coronado" and "Palms")
+        # 2. Token overlap check (matches "Coronado" and "Palms" anywhere in row)
         tokens = [t for t in target_clean.split() if len(t) > 2]
         if tokens:
             for _, row in df.iterrows():
-                opp_name = normalize_text(row.get('Opportunity Name', '')).lower()
-                prop_name = normalize_text(row.get('Property Name', '')).lower()
+                opp_name = str(row.get('Opportunity Name', '')).strip().lower()
+                prop_name = str(row.get('Property Name', '')).strip().lower()
                 combined = f"{opp_name} {prop_name}"
                 if all(t in combined for t in tokens):
                     return row
 
-        # 3. Fuzzy matching across Opportunity Name column
-        opp_list = [normalize_text(x).lower() for x in df['Opportunity Name'].dropna().tolist()]
-        matches = difflib.get_close_matches(target_clean, opp_list, n=1, cutoff=0.4)
-        if matches:
-            matched_name = matches[0]
-            for _, row in df.iterrows():
-                if normalize_text(row.get('Opportunity Name', '')).lower() == matched_name:
-                    return row
-
-        # 4. Fallback search across full row text
+        # 3. Fallback search across all cell values in row
         for _, row in df.iterrows():
-            row_str = " ".join([normalize_text(val) for val in row.values if pd.notna(val)]).lower()
-            if target_clean in row_str or raw_clean in row_str:
+            row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
+            if target_clean in row_str or raw_clean in row_str or (tokens and all(t in row_str for t in tokens)):
                 return row
 
     except Exception as e:
         st.error(f"Error reading Google Sheet: {e}")
     return None
 
+def extract_col_value(row, col_name):
+    """Extracts non-empty string value from exact sheet column name."""
+    if row is None:
+        return ''
+    val = row.get(col_name)
+    if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '', '#n/a']:
+        return str(val).strip()
+    return ''
+
 def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
-    """Generates a structured, clean CRE research note for Multifamily & Senior Living assets."""
+    """Generates structured CRE research note for Multifamily & Senior Living assets."""
     clean_name = clean_search_term(prop_name)
     
     prompt = f"""
@@ -191,7 +178,6 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     Sources & Evidence:
     """ + ("\n".join(sources[:4]) if sources else "• Search Public Records: https://www.google.com")
 
-    # Retry logic with model fallback
     models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
 
     for model_id in models_to_try:
@@ -227,21 +213,15 @@ if st.button("Generate Research Note"):
             row = get_property_data_from_sheet(opportunity_input)
             
             if row is not None:
-                def get_col_val(header_name):
-                    val = row.get(header_name)
-                    if pd.notna(val) and normalize_text(val).lower() not in ['nan', 'none', '']:
-                        return normalize_text(val)
-                    return ''
-
-                opp_name = get_col_val('Opportunity Name') or opportunity_input
-                prop_name = get_col_val('Property Name') or opp_name
-                street = get_col_val('Street')
-                city = get_col_val('City')
-                state = get_col_val('State/Province')
-                zip_code = get_col_val('Zip/Postal Code')
+                opp_name = extract_col_value(row, 'Opportunity Name') or opportunity_input
+                prop_name = extract_col_value(row, 'Property Name') or opp_name
+                street = extract_col_value(row, 'Street')
+                city = extract_col_value(row, 'City')
+                state = extract_col_value(row, 'State/Province')
+                zip_code = extract_col_value(row, 'Zip/Postal Code')
                 
-                prev_owner = get_col_val('Previous License Account') or 'Unknown'
-                prev_sop = get_col_val('Previous SOP') or 'Unknown'
+                prev_owner = extract_col_value(row, 'Previous License Account') or 'Unknown'
+                prev_sop = extract_col_value(row, 'Previous SOP') or 'Unknown'
                 
                 # Dynamic address builder
                 addr_parts = [p for p in [street, city, state, zip_code] if p]

@@ -28,7 +28,7 @@ def clean_search_term(raw_name):
     """
     if not raw_name:
         return ""
-    clean = raw_name.split('/')[0].split('(')[0]
+    clean = str(raw_name).split('/')[0].split('(')[0]
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
 
@@ -73,17 +73,16 @@ def search_web_for_property(prop_clean_name, street, city, state):
 def get_property_data_from_sheet(search_term):
     """
     Reads Google Sheet CSV and performs row matching safely converting all cells to string.
-    Checks Opportunity Name, Property Name, and row-wide tokens.
     """
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
-        df = pd.read_csv(sheet_url)
+        df = pd.read_csv(sheet_url, dtype=str)
         df.columns = df.columns.astype(str).str.strip()
         
         clean_target = clean_search_term(search_term).lower()
-        target_tokens = [t for t in clean_target.split() if len(t) > 2]
+        first_word = clean_target.split()[0] if clean_target else ""
         
-        # 1. Direct match on Opportunity Name or Property Name columns
+        # 1. Exact or Substring match on Opportunity Name or Property Name
         for _, row in df.iterrows():
             opp_name = str(row.get('Opportunity Name', '')).lower()
             prop_name = str(row.get('Property Name', '')).lower()
@@ -91,19 +90,18 @@ def get_property_data_from_sheet(search_term):
             if clean_target in opp_name or clean_target in prop_name:
                 return row
 
-        # 2. Tokenized match (all key words present in Opportunity or Property Name)
-        for _, row in df.iterrows():
-            opp_name = str(row.get('Opportunity Name', '')).lower()
-            prop_name = str(row.get('Property Name', '')).lower()
-            row_str = f"{opp_name} {prop_name}"
-            
-            if target_tokens and all(token in row_str for token in target_tokens):
-                return row
-                
-        # 3. Fallback across entire row
+        # 2. Search by first primary word (e.g., "Coronado" or "Watermark")
+        if len(first_word) > 3:
+            for _, row in df.iterrows():
+                opp_name = str(row.get('Opportunity Name', '')).lower()
+                prop_name = str(row.get('Property Name', '')).lower()
+                if first_word in opp_name or first_word in prop_name:
+                    return row
+
+        # 3. Search across entire row string
         for _, row in df.iterrows():
             row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
-            if clean_target in row_str or (target_tokens and all(token in row_str for token in target_tokens)):
+            if clean_target in row_str or (len(first_word) > 3 and first_word in row_str):
                 return row
 
     except Exception as e:

@@ -3,6 +3,7 @@ import pandas as pd
 import time
 from google import genai
 from google.genai import types
+from google.genai import errors
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -51,27 +52,22 @@ def generate_research_note(prop_name, address, prev_manager):
     """
     prompt = f"""
     Act as a Commercial Real Estate Research Analyst. 
-    Perform a live web search to verify actual commercial real estate transaction press releases, news, and records for:
-    - Property Name: {prop_name}
-    - Location/Address: {address}
+    Perform a targeted live web search for actual CRE transaction articles, brokerage press releases (Cushman & Wakefield, JLL, CBRE, REBusinessOnline, Connect CRE), and property records for:
+    - Opportunity / Property Name: {prop_name}
+    - Address/Location: {address}
     - Previous/Known Manager: {prev_manager}
 
-    Search specifically for recent sales, acquisitions, seller names, buyer names, brokerage press releases (e.g., Cushman & Wakefield, JLL, CBRE), purchase prices, unit counts, and corporate headquarters location.
-
-    Find and verify:
-    1. The actual current/new owner and property manager (e.g. Southwood Realty Co.).
-    2. The Headquartered State (HQ State) of the new owner.
-    3. The domain name of the new company.
-    4. Previous owner/developer (e.g. Waypoint Residential) and previous management.
-    5. Rebrand details (e.g. Mason Augusta / The Mason).
-    6. Transaction metrics: Purchase Price, Occupancy at sale, Unit count, Brokers involved.
-    7. Article or press release URLs confirming these facts.
-
-    CRITICAL INSTRUCTION:
-    Rely strictly on live search results for commercial real estate transactions. Do not fabricate or confuse site history.
+    Required Research Targets:
+    1. CURRENT OWNER & MANAGER: Identify the buyer/purchaser (e.g. Southwood Realty Co.) and current property manager.
+    2. PREVIOUS OWNER & DEVELOPER: Identify the seller (e.g. Waypoint Residential) and former management/license account (e.g. Greystar).
+    3. NEW OWNER HQ STATE: Corporate Headquarters location of buyer (City, State).
+    4. COMPANY DOMAIN: Official domain name of current owner/manager.
+    5. TRANSACTION METRICS: Sale/Purchase Price (e.g. $87M), transaction date (e.g. mid-2026 / July 2026), unit count (e.g. 462 units), occupancy rate at sale (e.g. 95%), and listing brokers (e.g. Cushman & Wakefield Sunbelt Advisory Group).
+    6. BRANDING / REBRAND: Note primary branding (Mason Augusta) and secondary branding (The Mason).
+    7. SOURCES / EVIDENCE: Exact article/press release URLs.
 
     OUTPUT FORMAT REQUIREMENT:
-    Return your response strictly in the following vertical layout with exact line breaks, headers, and bullet points:
+    Return strictly in the following vertical layout with exact line breaks, headers, and bullet points:
 
     ### 📋 Property Transition Research Note
     **Property:** {prop_name} ({address})
@@ -81,7 +77,7 @@ def generate_research_note(prop_name, address, prev_manager):
 
     **Ownership & Management**
     * **Current Owner:** [Owner Name]
-    * **Previous Owner:** [Previous Owner/Developer Name]
+    * **Previous Owner:** [Previous Owner / Developer Name]
     * **New Owner HQ State:** [City, State of HQ]
     * **Current Manager:** [Current Manager Name]
     * **Previous Manager:** {prev_manager}
@@ -91,22 +87,21 @@ def generate_research_note(prop_name, address, prev_manager):
     * **Account Executive:** [Look up in HubSpot manually]
 
     **Property Details & Context**
-    * **Rebrand Status:** [Details on primary/secondary branding]
-    * **Value-Add / Renovations:** [Details on property status/renovations]
-    * **Transaction Context:** [Details on purchase price, brokerage, occupancy, multi-phase expansion]
+    * **Rebrand Status:** [Primary & secondary branding details]
+    * **Value-Add / Renovations:** [Property status, e.g., stabilized 462-unit multi-phase development]
+    * **Transaction Context:** [Purchase Price, Sale Date, Brokerage info, Occupancy %]
 
     **Sources/Evidence:**
     * [Article/Press Release Title]: [URL]
     * [Article/Press Release Title]: [URL]
     """
     
-    # Official supported model names in google-genai
-    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash']
-    
-    # Correct SDK configuration for Google Search Grounding
+    # Enable Google Search Grounding Tool
     config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())]
     )
+
+    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash']
 
     for model_id in models_to_try:
         try:
@@ -116,19 +111,23 @@ def generate_research_note(prop_name, address, prev_manager):
                 config=config,
             )
             return response.text
-        except Exception as e:
-            if "429" in str(e) or "ResourceExhausted" in str(e):
-                time.sleep(3)
-                continue
-            else:
-                continue
+        except (errors.APIError, errors.ClientError) as e:
+            # Catch API errors safely and attempt fallback model
+            time.sleep(2)
+            continue
+        except Exception:
+            time.sleep(2)
+            continue
 
-    # Fallback to standard request without tool if grounding tool isn't enabled for API key
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
-    )
-    return response.text
+    # Fallback attempt without tools if search grounding is unbacked for the API tier
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text
+    except Exception as final_e:
+        return f"Error executing research generation: {str(final_e)}"
 
 # -----------------------------------------
 # 3. STREAMLIT USER INTERFACE

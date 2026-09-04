@@ -21,26 +21,26 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
-def search_web_for_property(prop_name, address):
+def search_web_for_property(prop_name, city_state=""):
     """
-    Executes targeted web search using DuckDuckGo to pull real CRE press release text,
-    transaction metrics, and listing URLs prior to running Gemini.
+    Executes a targeted search via DuckDuckGo for CRE deal articles and press releases.
     """
-    search_query = f'"{prop_name}" "Cushman" OR "Southwood" OR "Waypoint" OR "sale"'
+    query = f'"{prop_name}" {city_state} "Cushman" OR "Southwood" OR "Waypoint" OR "sale"'
     results_text = ""
     sources = []
     
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(search_query, max_results=5))
+            results = list(ddgs.text(query, max_results=5))
             for r in results:
-                title = r.get('title', '')
-                snippet = r.get('body', '')
-                url = r.get('href', '')
-                results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
-                sources.append(f"* [{title}]: {url}")
-    except Exception as e:
-        results_text = "Search unavailable."
+                title = r.get('title', '').strip()
+                snippet = r.get('body', '').strip()
+                url = r.get('href', '').strip()
+                if url:
+                    results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
+                    sources.append(f"• {title}: {url}")
+    except Exception:
+        results_text = "Live search unavailable."
         
     return results_text, sources
 
@@ -60,53 +60,48 @@ def get_property_data_from_sheet(search_term):
 def generate_research_note(prop_name, address, prev_manager, search_data, sources):
     prompt = f"""
     Act as a Senior Commercial Real Estate Research Analyst.
-    Extract and structure the transaction details using the following live web search research data:
+    Synthesize the transaction details using the following research data:
 
-    WEB SEARCH DATA:
+    RESEARCH DATA:
     {search_data}
 
-    PROPERTY PARAMETERS FROM SHEET:
+    SHEET PARAMETERS:
     - Opportunity / Property Name: {prop_name}
     - Location / Address: {address}
     - Previous Manager / SOP: {prev_manager}
 
-    TARGET CRE DATA REQUIREMENTS:
-    1. CURRENT OWNER & MANAGER: Identify buyer (e.g., Southwood Realty Co.) and current property management.
-    2. PREVIOUS OWNER & DEVELOPER: Identify seller (e.g., Waypoint Residential) and former management/license account (e.g., Greystar).
-    3. NEW OWNER HQ STATE: Corporate HQ state of buyer (e.g., Gastonia, NC or North Carolina).
-    4. COMPANY DOMAIN: Domain name of current owner (e.g., southwoodrealty.com).
-    5. TRANSACTION METRICS: Purchase Price (e.g., $87M), sale date (mid-2026/July 2026), unit count (e.g., 462 units), occupancy rate at sale (e.g., 95%), and listing brokers (e.g., Cushman & Wakefield).
-    6. BRANDING / REBRAND: Note primary branding (Mason Augusta) and secondary branding (The Mason).
+    REQUIREMENTS:
+    1. Extract the current owner (buyer), previous owner (seller), HQ state, manager, unit count, price, and broker.
+    2. Format the output cleanly so it pastes into HubSpot Notes without broken markdown formatting or header symbols.
 
-    OUTPUT FORMAT REQUIREMENT:
+    HUBSPOT NOTE FORMAT REQUIREMENT:
     Return strictly in the following vertical layout:
 
-    ### 📋 Property Transition Research Note
-    **Property:** {prop_name} ({address})
+    📋 Property Transition Research Note
+    Property: {prop_name} ({address})
 
-    **Research Summary**
-    [Insert 2-3 sentence overview of the acquisition, including transaction price, unit count, and buyer/seller]
+    Research Summary:
+    [2-3 sentence overview of the transaction, price, unit count, buyer, and seller]
 
-    **Ownership & Management**
-    * **Current Owner:** [Owner Name]
-    * **Previous Owner:** [Previous Owner / Developer Name]
-    * **New Owner HQ State:** [City, State of HQ]
-    * **Current Manager:** [Current Manager Name]
-    * **Previous Manager:** {prev_manager}
+    Ownership & Management:
+    • Current Owner: [Owner Name]
+    • Previous Owner: [Previous Owner Name]
+    • New Owner HQ State: [City, State]
+    • Current Manager: [Current Manager Name]
+    • Previous Manager: {prev_manager}
 
-    **HubSpot Info**
-    * **Company Domain:** [e.g., southwoodrealty.com]
-    * **Account Executive:** [Look up in HubSpot manually]
+    HubSpot Info:
+    • Company Domain: [e.g., southwoodrealty.com]
+    • Account Executive: [Look up in HubSpot manually]
 
-    **Property Details & Context**
-    * **Rebrand Status:** [Primary & secondary branding details]
-    * **Value-Add / Renovations:** [Property status, e.g., stabilized 462-unit multi-phase development]
-    * **Transaction Context:** [Purchase Price, Sale Date, Brokerage info, Occupancy %]
+    Property Details & Context:
+    • Rebrand Status: [Primary and secondary branding]
+    • Value-Add / Renovations: [Property status and units]
+    • Transaction Context: [Purchase Price, Sale Date, Brokerage info, Occupancy %]
 
-    **Sources/Evidence:**
-    """ + "\n".join(sources if sources else ["* [Press Release Search]: https://rebusinessonline.com"])
+    Sources & Evidence:
+    """ + ("\n".join(sources) if sources else "• Search Press Release: https://rebusinessonline.com")
 
-    # Call the active gemini-3.6-flash model
     for attempt in range(3):
         try:
             response = client.models.generate_content(
@@ -116,12 +111,12 @@ def generate_research_note(prop_name, address, prev_manager, search_data, source
             return response.text
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                time.sleep(5)
+                time.sleep(4)
                 continue
             else:
                 return f"Error generating research note: {str(e)}"
                 
-    return "API rate limit reached. Please wait 1 minute and try again."
+    return "API rate limit reached. Please try again in 1 minute."
 
 # -----------------------------------------
 # 3. STREAMLIT USER INTERFACE
@@ -137,27 +132,30 @@ if st.button("Generate Research Note"):
             prop_data = get_property_data_from_sheet(opportunity_input)
             
             if prop_data is not None:
+                # Clean key names
                 cols = {str(k).strip().lower(): v for k, v in prop_data.to_dict().items()}
                 
                 prop_name = cols.get('property name') or cols.get('opportunity name') or opportunity_input
-                street = cols.get('street', '')
-                city = cols.get('city', '')
-                state = cols.get('state/province') or cols.get('state', '')
-                zip_code = cols.get('zip/postal code') or cols.get('zip', '')
                 
-                address_parts = [str(p) for p in [street, city, state, zip_code] if pd.notna(p) and str(p).strip() != 'nan']
-                address = ", ".join(address_parts) if address_parts else "Address Not Provided"
-                
+                # Build clean address safely without trailing commas
+                addr_vals = []
+                for k in ['street', 'address', 'city', 'state', 'state/province', 'zip', 'zip/postal code']:
+                    val = cols.get(k)
+                    if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '']:
+                        if str(val).strip() not in addr_vals:
+                            addr_vals.append(str(val).strip())
+                            
+                address = ", ".join(addr_vals) if addr_vals else "Augusta, GA"
                 prev_manager = cols.get('previous sop') or cols.get('previous manager') or 'Unknown'
                 
-                # Fetch web search data directly
+                # Search web
                 search_data, sources = search_web_for_property(prop_name, address)
                 
-                # Run Gemini Research
+                # Generate note formatted specifically for HubSpot Notes
                 final_note = generate_research_note(prop_name, address, prev_manager, search_data, sources)
                 
                 st.success("Research Complete! Click the copy button in the top right of the box below.")
-                st.code(final_note, language="markdown")
+                st.code(final_note, language="text")
                 
             else:
                 st.error("Opportunity Name not found in your Google Sheet. Please check the spelling.")

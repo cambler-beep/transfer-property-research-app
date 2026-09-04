@@ -35,16 +35,16 @@ def clean_search_term(raw_name):
 def search_web_for_property(prop_clean_name, street, city, state):
     """
     Executes a multi-angle search designed to capture Multifamily, Senior Living, 
-    and Commercial Real Estate deal publications (Traded, REBusinessOnline, Connect CRE, etc.).
+    and CRE deal publications (Traded, REBusinessOnline, Senior Housing News, etc.).
     """
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = []
     if street and city:
-        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR operator')
+        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR "$"')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR sold OR rebranded OR "$"')
+        queries.append(f'"{base_name}" "{city}" sale OR sold OR rebranded OR owner')
     if base_name:
         queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "Assisted Living" OR "managed by"')
     
@@ -108,13 +108,13 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, or REIT.
-    2. CURRENT MANAGER / OPERATOR: Identify the active property manager, senior living operator, or operating entity (and CEO/Leadership if mentioned).
-    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator.
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Stellar Senior Living / 9005 North Oracle Owner LLC).
+    2. CURRENT MANAGER / OPERATOR: Identify active property manager, operating company, or executive leadership (e.g. CEO Evrett Benton).
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. PGIM Real Estate) and former property manager/SOP operator.
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
     5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
-    6. REBRAND STATUS: Identify any name changes or rebranding (e.g., Formerly [Old Name]; rebranded to [New Name]).
-    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living: e.g. Assisted Living / Memory Care / Independent Living), and key amenities.
+    6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly The Watermark at Oro Valley; rebranded to The Ironwood at Oro Valley, Assisted Living & Memory Care).
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living: Assisted Living / Memory Care / Independent Living), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
     9. TRANSACTION CONTEXT: Summarize purchase price (e.g. $23M), sale date, buyer, seller, and brokerage details.
 
@@ -131,7 +131,7 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     • Current Owner: [Owner Name / Holding Entity / Purchasing LLC]
     • Previous Owner: {prev_owner if prev_owner != 'Unknown' else '[Previous Owner / Seller Name]'}
     • New Owner HQ State: [City, State of HQ]
-    • Current Manager: [Current Property Manager / Operating Company]
+    • Current Manager: [Current Property Manager / Operating Company & Executive Leadership]
     • Current Manager HQ State: [City, State of HQ]
     • Previous Manager: {prev_sop if prev_sop != 'Unknown' else '[Previous Manager Name]'}
 

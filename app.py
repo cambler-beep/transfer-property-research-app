@@ -22,31 +22,25 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
 def clean_search_term(raw_name):
-    """
-    Strips internal deal suffixes (e.g., '/ SM Transfer', '/ Transfer', 'SOP')
-    to extract the core property name for sheet lookup and web research.
-    """
+    """Strips internal deal tags (/ SM Transfer, / Transfer, SOP) to extract pure name."""
     if not raw_name:
         return ""
-    clean = str(raw_name).replace('\xa0', ' ').split('/')[0].split('(')[0]
+    clean = str(raw_name).split('/')[0].split('(')[0]
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
-    """
-    Executes Python-side DuckDuckGo searches targeted for Multifamily, 
-    Senior Living, and CRE deal transactions.
-    """
+    """Executes DuckDuckGo searches targeted for Multifamily & Senior Living."""
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = []
     if street and city:
-        queries.append(f'"{street}" "{city}" owner OR manager OR acquired OR "Oro"')
+        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR "$"')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded OR "Cannon"')
+        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded')
     if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
+        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "managed by"')
     
     results_text = ""
     sources = []
@@ -71,54 +65,28 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
-    """
-    Reads Google Sheet CSV using exact column headers and performs row matching.
-    """
+    """Reads Google Sheet CSV using the original, working Pandas logic."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
-        df = pd.read_csv(sheet_url, dtype=str)
+        df = pd.read_csv(sheet_url)
+        # Clean headers the exact way it worked before
+        df.columns = df.columns.astype(str).str.strip()
         
-        raw_clean = str(search_term).replace('\xa0', ' ').strip().lower()
         target_clean = clean_search_term(search_term).lower()
         
-        # 1. Match directly against Opportunity Name or Property Name columns
         for _, row in df.iterrows():
-            opp_name = str(row.get('Opportunity Name', '')).strip().lower()
-            prop_name = str(row.get('Property Name', '')).strip().lower()
+            opp_name = str(row.get('Opportunity Name', '')).lower()
+            prop_name = str(row.get('Property Name', '')).lower()
             
-            if target_clean in opp_name or target_clean in prop_name or opp_name in target_clean or prop_name in target_clean:
+            # Safe row-wide string search to prevent float/NaN errors
+            row_str = " ".join(row.astype(str).values).lower()
+            
+            if target_clean in opp_name or target_clean in prop_name or target_clean in row_str:
                 return row
-            if raw_clean in opp_name or raw_clean in prop_name:
-                return row
-
-        # 2. Token overlap check (matches "Coronado" and "Palms" anywhere in row)
-        tokens = [t for t in target_clean.split() if len(t) > 2]
-        if tokens:
-            for _, row in df.iterrows():
-                opp_name = str(row.get('Opportunity Name', '')).strip().lower()
-                prop_name = str(row.get('Property Name', '')).strip().lower()
-                combined = f"{opp_name} {prop_name}"
-                if all(t in combined for t in tokens):
-                    return row
-
-        # 3. Fallback search across all cell values in row
-        for _, row in df.iterrows():
-            row_str = " ".join([str(val) for val in row.values if pd.notna(val)]).lower()
-            if target_clean in row_str or raw_clean in row_str or (tokens and all(t in row_str for t in tokens)):
-                return row
-
+                
     except Exception as e:
         st.error(f"Error reading Google Sheet: {e}")
     return None
-
-def extract_col_value(row, col_name):
-    """Extracts non-empty string value from exact sheet column name."""
-    if row is None:
-        return ''
-    val = row.get(col_name)
-    if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '', '#n/a']:
-        return str(val).strip()
-    return ''
 
 def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
     """Generates structured CRE research note for Multifamily & Senior Living assets."""
@@ -138,11 +106,11 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund / Canyon Partners Real Estate).
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund).
     2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Cannon Management).
     3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. Bridge Investment Group) and former property manager/SOP operator.
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
-    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator (e.g. liveatoro.com or cannonmanagement.com).
+    5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
     6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly Coronado Palms / Palmilla Villas; rebranded to Oro Apartments).
     7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 168-unit community), care levels (if Senior Living), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
@@ -213,15 +181,22 @@ if st.button("Generate Research Note"):
             row = get_property_data_from_sheet(opportunity_input)
             
             if row is not None:
-                opp_name = extract_col_value(row, 'Opportunity Name') or opportunity_input
-                prop_name = extract_col_value(row, 'Property Name') or opp_name
-                street = extract_col_value(row, 'Street')
-                city = extract_col_value(row, 'City')
-                state = extract_col_value(row, 'State/Province')
-                zip_code = extract_col_value(row, 'Zip/Postal Code')
+                # Reverted exactly to the column extraction logic that worked for you before
+                def get_col_val(header_name):
+                    val = row.get(header_name)
+                    if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', '']:
+                        return str(val).strip()
+                    return ''
+
+                opp_name = get_col_val('Opportunity Name') or opportunity_input
+                prop_name = get_col_val('Property Name') or opp_name
+                street = get_col_val('Street')
+                city = get_col_val('City')
+                state = get_col_val('State/Province')
+                zip_code = get_col_val('Zip/Postal Code')
                 
-                prev_owner = extract_col_value(row, 'Previous License Account') or 'Unknown'
-                prev_sop = extract_col_value(row, 'Previous SOP') or 'Unknown'
+                prev_owner = get_col_val('Previous License Account') or 'Unknown'
+                prev_sop = get_col_val('Previous SOP') or 'Unknown'
                 
                 # Dynamic address builder
                 addr_parts = [p for p in [street, city, state, zip_code] if p]

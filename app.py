@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
+import time
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -16,7 +17,7 @@ if not GEMINI_API_KEY:
     st.stop()
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-flash-latest')
+
 # -----------------------------------------
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
@@ -29,10 +30,8 @@ def get_property_data_from_sheet(search_term):
     
     try:
         df = pd.read_csv(sheet_url)
-        # Clean column headers (strip spaces)
         df.columns = df.columns.astype(str).str.strip()
         
-        # Search across all string columns for the search term
         mask = df.apply(lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(), axis=1)
         matching_rows = df[mask]
         
@@ -47,6 +46,7 @@ def generate_research_note(prop_name, address, prev_manager):
     """
     Prompts Gemini to research the web and return 
     a vertically formatted note with HQ state and source links.
+    Includes rate limit retry logic.
     """
     prompt = f"""
     Act as a Commercial Real Estate Research Analyst. 
@@ -93,6 +93,25 @@ def generate_research_note(prop_name, address, prev_manager):
     * [Article/Press Release Title]: [URL]
     """
     
+    # Try models with retries on rate limits
+    models_to_try = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash']
+    
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            if "ResourceExhausted" in str(e) or "429" in str(e):
+                time.sleep(3)  # Pause to let the rate-limit window reset
+                continue
+            else:
+                # If non-quota error, retry with next model
+                continue
+
+    # Fallback attempt after brief delay
+    time.sleep(5)
+    model = genai.GenerativeModel('gemini-1.5-flash')
     response = model.generate_content(prompt)
     return response.text
 
@@ -110,7 +129,6 @@ if st.button("Generate Research Note"):
             prop_data = get_property_data_from_sheet(opportunity_input)
             
             if prop_data is not None:
-                # Find column values safely regardless of slight header naming differences
                 cols = {str(k).strip().lower(): v for k, v in prop_data.to_dict().items()}
                 
                 prop_name = cols.get('property name') or cols.get('opportunity name') or opportunity_input

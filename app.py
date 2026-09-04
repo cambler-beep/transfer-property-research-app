@@ -23,7 +23,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # -----------------------------------------
 def search_web_for_property(prop_name, address):
     """
-    Executes live web search using DuckDuckGo to pull real CRE press release text,
+    Executes targeted web search using DuckDuckGo to pull real CRE press release text,
     transaction metrics, and listing URLs prior to running Gemini.
     """
     search_query = f'"{prop_name}" "Cushman" OR "Southwood" OR "Waypoint" OR "sale"'
@@ -106,11 +106,11 @@ def generate_research_note(prop_name, address, prev_manager, search_data, source
     **Sources/Evidence:**
     """ + "\n".join(sources if sources else ["* [Press Release Search]: https://rebusinessonline.com"])
 
-    # Single, lightweight API call to gemini-2.5-flash
+    # Call the active gemini-3.6-flash model
     for attempt in range(3):
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=prompt,
             )
             return response.text

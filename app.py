@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import re
 from google import genai
+from google.genai import types # Added to enable Google Search Grounding
 
 # -----------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -28,67 +29,6 @@ def clean_search_term(raw_name):
     clean = str(raw_name).replace('\xa0', ' ').split('/')[0].split('(')[0]
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
-
-def search_web_for_property(prop_clean_name, street, city, state):
-    """Executes DuckDuckGo searches forcing specific phrases to capture management data."""
-    from duckduckgo_search import DDGS
-    base_name = clean_search_term(prop_clean_name)
-    location = f"{city} {state}".strip() if city else ""
-    
-    queries = []
-    # FORCED PHRASES: This forces the search engine to pull footer text into the preview snippet
-    if base_name and location:
-        queries.append(f'"{base_name}" {location} "managed by"')
-        queries.append(f'"{base_name}" {location} "acquired by" OR sale')
-    if street and location:
-        queries.append(f'"{street}" {location} property management')
-    elif base_name:
-        queries.append(f'"{base_name}" apartments "managed by"')
-    
-    results_text = ""
-    sources = []
-    seen_urls = set()
-    
-    try:
-        browser_headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        
-        try:
-            ddgs = DDGS(headers=browser_headers)
-        except TypeError:
-            ddgs = DDGS()
-            
-        with ddgs:
-            for q in queries:
-                results = []
-                try:
-                    results = list(ddgs.text(q, max_results=4, backend="html"))
-                except:
-                    try:
-                        results = list(ddgs.text(q, max_results=4, backend="lite"))
-                    except:
-                        try:
-                            results = list(ddgs.text(q, max_results=4))
-                        except Exception:
-                            pass 
-                        
-                for r in results:
-                    url = r.get('href', '').strip()
-                    title = r.get('title', '').strip()
-                    snippet = r.get('body', '').strip()
-                    
-                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url and 'imdb.com' not in url:
-                        seen_urls.add(url)
-                        results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
-                        sources.append(f"• {title}: {url}")
-                
-                time.sleep(2) # Pause to prevent Streamlit from being blocked
-                
-    except Exception as e:
-        results_text = f"SEARCH_FAILED: {str(e)}"
-        
-    return results_text, sources
 
 def get_property_data_from_sheet(search_term):
     """Reads Google Sheet CSV, skips the Coefficient banner, and maps the exact row."""
@@ -120,27 +60,26 @@ def get_flexible_col(row, possible_headers):
                     return str(val).strip()
     return ''
 
-def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
-    """Generates structured CRE research note for Multifamily & Senior Living assets."""
+def generate_research_note(prop_name, full_address, prev_owner, prev_sop):
+    """Generates CRE research note using Gemini's native Google Search capabilities."""
     clean_name = clean_search_term(prop_name)
     
     prompt = f"""
     Act as a Senior Commercial Real Estate (CRE) & Senior Housing Research Analyst.
-    Synthesize property transaction, ownership, management/operator, and rebranding details strictly using the provided search research data.
-
-    SEARCH RESEARCH DATA:
-    {search_data}
-
-    GOOGLE SHEET PARAMETERS:
-    - Opportunity / Property Name: {clean_name}
+    
+    YOUR CRITICAL TASK:
+    Use your built-in Google Search tool to browse the live internet and find the most up-to-date property management, ownership, and transaction details for the following asset. Search for the property website, press releases, and commercial real estate news.
+    
+    PROPERTY TO RESEARCH:
+    - Name: {clean_name}
     - Location / Address: {full_address}
     - Previous Owner / Account: {prev_owner}
-    - Previous Manager / SOP: {prev_sop}
+    - Previous Manager / SOP: {prev_sop} (NOTE: Ignore if this is a Salesforce ID like '006QK...')
 
     TARGET INSTRUCTIONS:
     1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity.
-    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Pegasus Residential).
-    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator. (NOTE: If the provided previous manager is a Salesforce ID like '006QK...', completely ignore it and write 'Unknown').
+    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Pegasus Residential). Check the footer of the property's official website.
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator.
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
     5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
     6. REBRAND STATUS: Identify any name changes or rebranding.
@@ -176,16 +115,22 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     • Transaction Context: [Purchase price, sale date, seller, buyer, brokerage details, or operational transition]
 
     Sources & Evidence:
-    """ + ("\n".join(sources[:4]) if sources else "• Search Public Records: https://www.google.com")
+    • List the URLs you found during your Google Search.
+    """
 
-    models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
+    # Upgraded to the official Google models that support Search Grounding natively
+    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash']
 
     for model_id in models_to_try:
         for attempt in range(2):
             try:
+                # MAGIC HAPPENS HERE: We tell Gemini to use Google Search itself
                 response = client.models.generate_content(
                     model=model_id,
                     contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[{"google_search": {}}]
+                    )
                 )
                 if response and response.text:
                     return response.text
@@ -208,7 +153,7 @@ opportunity_input = st.text_input("Opportunity Name (e.g., Property Name / Trans
 
 if st.button("Generate Research Note"):
     if opportunity_input:
-        with st.spinner("🔍 Reading sheet and conducting CRE web search..."):
+        with st.spinner("🔍 Reading sheet and conducting live Google Search via AI..."):
             
             row = get_property_data_from_sheet(opportunity_input)
             
@@ -231,18 +176,14 @@ if st.button("Generate Research Note"):
                 else:
                     full_address = "Address Not Specified"
                 
-                search_data, sources = search_web_for_property(prop_name, street, city, state)
-
-                if "SEARCH_FAILED" in search_data or not sources:
-                    st.error("⚠️ Web Search Blocked: DuckDuckGo returned 0 results. The server may be temporarily rate-limited. Please try again in 30 seconds.")
+                # Directly generate note (Gemini does the search internally now)
+                final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop)
+                
+                if "Google AI servers are currently experiencing high demand" in final_note:
+                    st.error("⚠️ AI API Error: The Google Gemini API timed out. Please click Generate again.")
                 else:
-                    final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources)
-                    
-                    if "Google AI servers are currently experiencing high demand" in final_note:
-                        st.error("⚠️ AI API Error: The Google Gemini API timed out. Please click Generate again.")
-                    else:
-                        st.success("Research Complete! Click the copy button in the top right of the box below.")
-                        st.code(final_note, language="text")
+                    st.success("Research Complete! Click the copy button in the top right of the box below.")
+                    st.code(final_note, language="text")
                 
             else:
                 st.error("Opportunity Name not found in your Google Sheet. Please check the spelling.")

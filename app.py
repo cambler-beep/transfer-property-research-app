@@ -30,29 +30,26 @@ def clean_search_term(raw_name):
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
-    """Executes simple, human-like DuckDuckGo searches to guarantee accurate property results."""
+    """Executes DuckDuckGo searches forcing specific phrases to capture management data."""
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
-    
-    # Format a clean location string (e.g., "Marietta GA")
     location = f"{city} {state}".strip() if city else ""
     
     queries = []
-    # REMOVED all OR/Quote operators. Searching exactly like a human to prevent confused results.
+    # FORCED PHRASES: This forces the search engine to pull footer text into the preview snippet
     if base_name and location:
-        queries.append(f"{base_name} apartments {location} property management")
-        queries.append(f"{base_name} {location} real estate acquired sold")
+        queries.append(f'"{base_name}" {location} "managed by"')
+        queries.append(f'"{base_name}" {location} "acquired by" OR sale')
     if street and location:
-        queries.append(f"{street} {location} apartments property manager")
+        queries.append(f'"{street}" {location} property management')
     elif base_name:
-        queries.append(f"{base_name} property management apartments")
+        queries.append(f'"{base_name}" apartments "managed by"')
     
     results_text = ""
     sources = []
     seen_urls = set()
     
     try:
-        # Disguise to prevent blocking
         browser_headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
@@ -65,7 +62,6 @@ def search_web_for_property(prop_clean_name, street, city, state):
         with ddgs:
             for q in queries:
                 results = []
-                # Fallback backend system
                 try:
                     results = list(ddgs.text(q, max_results=4, backend="html"))
                 except:
@@ -82,13 +78,12 @@ def search_web_for_property(prop_clean_name, street, city, state):
                     title = r.get('title', '').strip()
                     snippet = r.get('body', '').strip()
                     
-                    # Strict garbage link filter
                     if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url and 'imdb.com' not in url:
                         seen_urls.add(url)
                         results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
                         sources.append(f"• {title}: {url}")
                 
-                time.sleep(2) # Pause between queries
+                time.sleep(2) # Pause to prevent Streamlit from being blocked
                 
     except Exception as e:
         results_text = f"SEARCH_FAILED: {str(e)}"
@@ -228,7 +223,6 @@ if st.button("Generate Research Note"):
                 prev_owner = get_flexible_col(row, ['Previous License Account', 'Previous Owner']) or 'Unknown'
                 prev_sop = get_flexible_col(row, ['Previous SOP', 'Previous Manager']) or 'Unknown'
                 
-                # Dynamic address builder
                 addr_parts = [p for p in [street, city, state, zip_code] if p]
                 if addr_parts:
                     full_address = ", ".join(addr_parts)
@@ -237,14 +231,11 @@ if st.button("Generate Research Note"):
                 else:
                     full_address = "Address Not Specified"
                 
-                # Execute Python web search
                 search_data, sources = search_web_for_property(prop_name, street, city, state)
 
-                # Catch Search Engine Failures
                 if "SEARCH_FAILED" in search_data or not sources:
                     st.error("⚠️ Web Search Blocked: DuckDuckGo returned 0 results. The server may be temporarily rate-limited. Please try again in 30 seconds.")
                 else:
-                    # Generate research note
                     final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources)
                     
                     if "Google AI servers are currently experiencing high demand" in final_note:

@@ -65,11 +65,11 @@ def search_web_for_property(prop_clean_name, street, city, state):
     return results_text, sources
 
 def get_property_data_from_sheet(search_term):
-    """Reads Google Sheet CSV and guarantees a match without float/NaN crashes."""
+    """Reads Google Sheet CSV, skips the Coefficient banner, and maps the exact row."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
-        # Fill empty cells with strings to prevent float crashes
-        df = pd.read_csv(sheet_url, dtype=str).fillna("")
+        # THE FIX: skiprows=1 skips the Coefficient blue banner so it reads the real column headers!
+        df = pd.read_csv(sheet_url, skiprows=1, dtype=str).fillna("")
         
         target_clean = clean_search_term(search_term).lower()
         
@@ -83,11 +83,10 @@ def get_property_data_from_sheet(search_term):
     return None
 
 def get_flexible_col(row, possible_headers):
-    """Bulletproof column extractor that ignores hidden spaces, tabs, and case sensitivity."""
+    """Bulletproof column extractor that matches your exact column names."""
     if row is None:
         return ''
     for key in row.keys():
-        # Strip all hidden unicode characters from the Google Sheet column header
         clean_key = re.sub(r'[\xa0\s]+', ' ', str(key)).strip().lower()
         for h in possible_headers:
             if clean_key == h.lower():
@@ -120,7 +119,7 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
     5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
     6. REBRAND STATUS: Identify any name changes or rebranding.
-    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 168-unit community), care levels (if Senior Living), and key amenities.
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
     9. TRANSACTION CONTEXT: Summarize purchase price, sale date, buyer, seller, and brokerage details.
 

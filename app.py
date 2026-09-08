@@ -109,7 +109,8 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop):
     • List the URLs you found during your Google Search.
     """
 
-    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash']
+    # THE FIX: Updated to use the correct, active models
+    models_to_try = ['gemini-3.6-flash', 'gemini-3.1-flash-lite']
     error_logs = []
 
     for model_id in models_to_try:
@@ -126,7 +127,6 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop):
         except Exception as e:
             error_logs.append(f"Model {model_id} failed: {str(e)}")
 
-    # If both models fail, return the EXACT error messages so we can debug
     return "CRITICAL_ERROR: " + " | ".join(error_logs)
 
 # -----------------------------------------
@@ -164,7 +164,6 @@ if st.button("Generate Research Note"):
                 final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop)
                 
                 if "CRITICAL_ERROR:" in final_note:
-                    # Print the exact, raw error to the screen
                     exact_error = final_note.replace("CRITICAL_ERROR: ", "")
                     st.error(f"⚠️ Gemini API Error Details:\n\n{exact_error}")
                 else:

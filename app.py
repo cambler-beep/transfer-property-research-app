@@ -30,17 +30,18 @@ def clean_search_term(raw_name):
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
-    """Executes natural-language DuckDuckGo searches to avoid garbage fallback results."""
+    """Executes the exact DuckDuckGo queries that worked successfully last week."""
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = []
-    # Natural, human-like search queries that don't trigger search engine blocking
-    if base_name and city:
-        queries.append(f'{base_name} apartments {city} property management')
-        queries.append(f'{base_name} {city} commercial real estate acquired')
+    # REVERTED to the exact queries that successfully pulled CRE data last week
     if street and city:
-        queries.append(f'"{street}" {city} property manager')
+        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR manager')
+    if base_name and city:
+        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded')
+    if base_name:
+        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
     
     results_text = ""
     sources = []
@@ -48,20 +49,23 @@ def search_web_for_property(prop_clean_name, street, city, state):
     
     try:
         with DDGS() as ddgs:
-            for q in queries:
-                results = list(ddgs.text(q, max_results=4))
+            for q in queries[:3]:
+                results = list(ddgs.text(q, max_results=5))
                 for r in results:
                     url = r.get('href', '').strip()
                     title = r.get('title', '').strip()
                     snippet = r.get('body', '').strip()
                     
-                    # Prevent AI from reading garbage fallback links (Google Help, Wikipedia, etc.)
-                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url:
+                    # Prevent AI from hallucinating on garbage links
+                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url and 'imdb.com' not in url:
                         seen_urls.add(url)
                         results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
                         sources.append(f"• {title}: {url}")
-    except Exception:
-        results_text = "Live search data processing."
+                
+                # Critical: Pause for 1.5 seconds so DuckDuckGo doesn't block the Streamlit server!
+                time.sleep(1.5)
+    except Exception as e:
+        results_text = f"SEARCH_FAILED: {str(e)}"
         
     return results_text, sources
 
@@ -209,12 +213,19 @@ if st.button("Generate Research Note"):
                 
                 # Execute Python web search
                 search_data, sources = search_web_for_property(prop_name, street, city, state)
-                
-                # Generate research note
-                final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources)
-                
-                st.success("Research Complete! Click the copy button in the top right of the box below.")
-                st.code(final_note, language="text")
+
+                # Catch Search Engine Failures
+                if "SEARCH_FAILED" in search_data or not sources:
+                    st.error("⚠️ Web Search Blocked: DuckDuckGo returned 0 results. The server may be temporarily rate-limited. Please try again in 30 seconds.")
+                else:
+                    # Generate research note
+                    final_note = generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources)
+                    
+                    if "Google AI servers are currently experiencing high demand" in final_note:
+                        st.error("⚠️ AI API Error: The Google Gemini API timed out. Please click Generate again.")
+                    else:
+                        st.success("Research Complete! Click the copy button in the top right of the box below.")
+                        st.code(final_note, language="text")
                 
             else:
                 st.error("Opportunity Name not found in your Google Sheet. Please check the spelling.")

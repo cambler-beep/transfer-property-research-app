@@ -30,23 +30,29 @@ def clean_search_term(raw_name):
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
-    """Executes DuckDuckGo searches using anti-bot bypasses for Streamlit Cloud."""
+    """Executes simple, human-like DuckDuckGo searches to guarantee accurate property results."""
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
+    # Format a clean location string (e.g., "Marietta GA")
+    location = f"{city} {state}".strip() if city else ""
+    
     queries = []
-    if base_name and city:
-        queries.append(f'{base_name} apartments {city} property management')
-        queries.append(f'{base_name} {city} commercial real estate acquired')
-    if street and city:
-        queries.append(f'"{street}" {city} property manager')
+    # REMOVED all OR/Quote operators. Searching exactly like a human to prevent confused results.
+    if base_name and location:
+        queries.append(f"{base_name} apartments {location} property management")
+        queries.append(f"{base_name} {location} real estate acquired sold")
+    if street and location:
+        queries.append(f"{street} {location} apartments property manager")
+    elif base_name:
+        queries.append(f"{base_name} property management apartments")
     
     results_text = ""
     sources = []
     seen_urls = set()
     
     try:
-        # 1. DISGUISE: Make Streamlit look like a Google Chrome browser on a Mac
+        # Disguise to prevent blocking
         browser_headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
@@ -54,13 +60,12 @@ def search_web_for_property(prop_clean_name, street, city, state):
         try:
             ddgs = DDGS(headers=browser_headers)
         except TypeError:
-            ddgs = DDGS() # Fallback if library version is older
+            ddgs = DDGS()
             
         with ddgs:
             for q in queries:
                 results = []
-                
-                # 2. BACKEND BYPASS: If the API is blocked, fall back to HTML or Lite web versions
+                # Fallback backend system
                 try:
                     results = list(ddgs.text(q, max_results=4, backend="html"))
                 except:
@@ -70,20 +75,20 @@ def search_web_for_property(prop_clean_name, street, city, state):
                         try:
                             results = list(ddgs.text(q, max_results=4))
                         except Exception:
-                            pass # If all 3 backends fail, we catch it below
+                            pass 
                         
                 for r in results:
                     url = r.get('href', '').strip()
                     title = r.get('title', '').strip()
                     snippet = r.get('body', '').strip()
                     
-                    # Garbage link filter
-                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url:
+                    # Strict garbage link filter
+                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url and 'imdb.com' not in url:
                         seen_urls.add(url)
                         results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
                         sources.append(f"• {title}: {url}")
                 
-                time.sleep(2) # Pause between queries to respect rate limits
+                time.sleep(2) # Pause between queries
                 
     except Exception as e:
         results_text = f"SEARCH_FAILED: {str(e)}"

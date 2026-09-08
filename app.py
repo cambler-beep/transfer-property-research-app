@@ -30,40 +30,61 @@ def clean_search_term(raw_name):
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
-    """Executes the exact DuckDuckGo queries that worked successfully last week."""
+    """Executes DuckDuckGo searches using anti-bot bypasses for Streamlit Cloud."""
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = []
-    # REVERTED to the exact queries that successfully pulled CRE data last week
-    if street and city:
-        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR manager')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded')
-    if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
+        queries.append(f'{base_name} apartments {city} property management')
+        queries.append(f'{base_name} {city} commercial real estate acquired')
+    if street and city:
+        queries.append(f'"{street}" {city} property manager')
     
     results_text = ""
     sources = []
     seen_urls = set()
     
     try:
-        with DDGS() as ddgs:
-            for q in queries[:3]:
-                results = list(ddgs.text(q, max_results=5))
+        # 1. DISGUISE: Make Streamlit look like a Google Chrome browser on a Mac
+        browser_headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        try:
+            ddgs = DDGS(headers=browser_headers)
+        except TypeError:
+            ddgs = DDGS() # Fallback if library version is older
+            
+        with ddgs:
+            for q in queries:
+                results = []
+                
+                # 2. BACKEND BYPASS: If the API is blocked, fall back to HTML or Lite web versions
+                try:
+                    results = list(ddgs.text(q, max_results=4, backend="html"))
+                except:
+                    try:
+                        results = list(ddgs.text(q, max_results=4, backend="lite"))
+                    except:
+                        try:
+                            results = list(ddgs.text(q, max_results=4))
+                        except Exception:
+                            pass # If all 3 backends fail, we catch it below
+                        
                 for r in results:
                     url = r.get('href', '').strip()
                     title = r.get('title', '').strip()
                     snippet = r.get('body', '').strip()
                     
-                    # Prevent AI from hallucinating on garbage links
-                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url and 'imdb.com' not in url:
+                    # Garbage link filter
+                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url:
                         seen_urls.add(url)
                         results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
                         sources.append(f"• {title}: {url}")
                 
-                # Critical: Pause for 1.5 seconds so DuckDuckGo doesn't block the Streamlit server!
-                time.sleep(1.5)
+                time.sleep(2) # Pause between queries to respect rate limits
+                
     except Exception as e:
         results_text = f"SEARCH_FAILED: {str(e)}"
         

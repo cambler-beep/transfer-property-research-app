@@ -22,7 +22,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
 def clean_search_term(raw_name):
-    """Strips internal deal tags (/ SM Transfer, / Transfer, SOP) to extract pure name."""
+    """Strips internal deal tags to extract pure property name."""
     if not raw_name:
         return ""
     clean = str(raw_name).replace('\xa0', ' ').split('/')[0].split('(')[0]
@@ -30,17 +30,17 @@ def clean_search_term(raw_name):
     return clean.strip()
 
 def search_web_for_property(prop_clean_name, street, city, state):
-    """Executes DuckDuckGo searches targeted for Multifamily & Senior Living."""
+    """Executes natural-language DuckDuckGo searches to avoid garbage fallback results."""
     from duckduckgo_search import DDGS
     base_name = clean_search_term(prop_clean_name)
     
     queries = []
-    if street and city:
-        queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR "$"')
+    # Natural, human-like search queries that don't trigger search engine blocking
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR "Atlas"')
-    if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
+        queries.append(f'{base_name} apartments {city} property management')
+        queries.append(f'{base_name} {city} commercial real estate acquired')
+    if street and city:
+        queries.append(f'"{street}" {city} property manager')
     
     results_text = ""
     sources = []
@@ -48,14 +48,15 @@ def search_web_for_property(prop_clean_name, street, city, state):
     
     try:
         with DDGS() as ddgs:
-            for q in queries[:3]:
-                results = list(ddgs.text(q, max_results=5))
+            for q in queries:
+                results = list(ddgs.text(q, max_results=4))
                 for r in results:
                     url = r.get('href', '').strip()
                     title = r.get('title', '').strip()
                     snippet = r.get('body', '').strip()
                     
-                    if url and url not in seen_urls:
+                    # Prevent AI from reading garbage fallback links (Google Help, Wikipedia, etc.)
+                    if url and url not in seen_urls and 'support.google' not in url and 'wikipedia.org' not in url:
                         seen_urls.add(url)
                         results_text += f"\n- Title: {title}\n  Snippet: {snippet}\n  URL: {url}\n"
                         sources.append(f"• {title}: {url}")
@@ -68,7 +69,6 @@ def get_property_data_from_sheet(search_term):
     """Reads Google Sheet CSV, skips the Coefficient banner, and maps the exact row."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
-        # THE FIX: skiprows=1 skips the Coefficient blue banner so it reads the real column headers!
         df = pd.read_csv(sheet_url, skiprows=1, dtype=str).fillna("")
         
         target_clean = clean_search_term(search_term).lower()
@@ -113,9 +113,9 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund).
-    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Atlas Real Estate, Cannon Management).
-    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator.
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity.
+    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Pegasus Residential).
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator. (NOTE: If the provided previous manager is a Salesforce ID like '006QK...', completely ignore it and write 'Unknown').
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
     5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
     6. REBRAND STATUS: Identify any name changes or rebranding.
@@ -134,11 +134,11 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
 
     Ownership & Management:
     • Current Owner: [Owner Name / Holding Entity / Purchasing LLC]
-    • Previous Owner: {prev_owner if prev_owner != 'Unknown' else '[Previous Owner / Seller Name]'}
+    • Previous Owner: {prev_owner if prev_owner != 'Unknown' and not prev_owner.startswith('006') else '[Previous Owner / Seller Name]'}
     • New Owner HQ State: [City, State of HQ]
     • Current Manager: [Current Property Manager / Operating Company]
     • Current Manager HQ State: [City, State of HQ]
-    • Previous Manager: {prev_sop if prev_sop != 'Unknown' else '[Previous Manager Name]'}
+    • Previous Manager: {prev_sop if prev_sop != 'Unknown' and not prev_sop.startswith('006') else '[Previous Manager Name]'}
 
     HubSpot Info:
     • Company Domain: [Official domain name]
@@ -188,7 +188,6 @@ if st.button("Generate Research Note"):
             row = get_property_data_from_sheet(opportunity_input)
             
             if row is not None:
-                # Use the bulletproof flexible column extractor
                 opp_name = get_flexible_col(row, ['Opportunity Name']) or opportunity_input
                 prop_name = get_flexible_col(row, ['Property Name']) or opp_name
                 street = get_flexible_col(row, ['Street', 'Street Address'])

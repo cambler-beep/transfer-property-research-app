@@ -25,7 +25,6 @@ def clean_search_term(raw_name):
     """Strips internal deal tags (/ SM Transfer, / Transfer, SOP) to extract pure name."""
     if not raw_name:
         return ""
-    # Replace copy/paste hidden spaces from Google Sheets
     clean = str(raw_name).replace('\xa0', ' ').split('/')[0].split('(')[0]
     clean = re.sub(r'(?i)\b(transfer|sop|retention|deal|sm|ai)\b', '', clean)
     return clean.strip()
@@ -39,9 +38,9 @@ def search_web_for_property(prop_clean_name, street, city, state):
     if street and city:
         queries.append(f'"{street}" "{city}" sale OR acquired OR owner OR "$"')
     if base_name and city:
-        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR rebranded')
+        queries.append(f'"{base_name}" "{city}" sale OR owner OR manager OR "Atlas"')
     if base_name:
-        queries.append(f'"{base_name}" "acquired by" OR "Senior Living" OR "managed by"')
+        queries.append(f'"{base_name}" "acquired by" OR "managed by" OR "apartments"')
     
     results_text = ""
     sources = []
@@ -69,25 +68,33 @@ def get_property_data_from_sheet(search_term):
     """Reads Google Sheet CSV and guarantees a match without float/NaN crashes."""
     sheet_url = "https://docs.google.com/spreadsheets/d/1SJQ7YWUVcSSBKCKMSQFlMInxBTOeiLoJal6g2EHwhUU/export?format=csv&gid=1440084512"
     try:
-        # THE FIX: .fillna("") forces all blank cells to be strings, NOT floats.
+        # Fill empty cells with strings to prevent float crashes
         df = pd.read_csv(sheet_url, dtype=str).fillna("")
-        df.columns = df.columns.astype(str).str.strip()
         
         target_clean = clean_search_term(search_term).lower()
         
         for _, row in df.iterrows():
-            opp_name = str(row.get('Opportunity Name', '')).replace('\xa0', ' ').lower()
-            prop_name = str(row.get('Property Name', '')).replace('\xa0', ' ').lower()
-            
-            # Because of .fillna(""), row.values only contains strings. .join() WILL NOT CRASH.
-            row_str = " ".join(row.values).replace('\xa0', ' ').lower()
-            
-            if target_clean in opp_name or target_clean in prop_name or target_clean in row_str:
+            row_str = " ".join(row.values).lower()
+            if target_clean in row_str:
                 return row
                 
     except Exception as e:
         st.error(f"Error reading Google Sheet: {e}")
     return None
+
+def get_flexible_col(row, possible_headers):
+    """Bulletproof column extractor that ignores hidden spaces, tabs, and case sensitivity."""
+    if row is None:
+        return ''
+    for key in row.keys():
+        # Strip all hidden unicode characters from the Google Sheet column header
+        clean_key = re.sub(r'[\xa0\s]+', ' ', str(key)).strip().lower()
+        for h in possible_headers:
+            if clean_key == h.lower():
+                val = row[key]
+                if val and str(val).strip().lower() not in ['nan', 'none', '', '#n/a']:
+                    return str(val).strip()
+    return ''
 
 def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search_data, sources):
     """Generates structured CRE research note for Multifamily & Senior Living assets."""
@@ -107,13 +114,13 @@ def generate_research_note(prop_name, full_address, prev_owner, prev_sop, search
     - Previous Manager / SOP: {prev_sop}
 
     TARGET INSTRUCTIONS:
-    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund / Canyon Partners).
-    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Cannon Management).
-    3. PREVIOUS OWNER & MANAGER: Identify seller/developer (e.g. Bridge Investment Group) and former property manager/SOP operator.
+    1. CURRENT OWNER: Identify the buyer, purchasing entity (LLC), holding company, REIT, or parent entity (e.g. Canyon Multifamily Impact Fund).
+    2. CURRENT MANAGER / OPERATOR: Identify active property manager or operating company (e.g. Atlas Real Estate, Cannon Management).
+    3. PREVIOUS OWNER & MANAGER: Identify seller/developer and former property manager/SOP operator.
     4. HEADQUARTERS STATES: Identify New Owner HQ State and Current Manager HQ State (City, State).
     5. COMPANY DOMAIN: Identify official domain name of the buyer or property manager/operator.
-    6. REBRAND STATUS: Identify any name changes or rebranding (e.g. Formerly Coronado Palms / Palmilla Villas; rebranded to Oro Apartments).
-    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count, care levels (if Senior Living), and key amenities.
+    6. REBRAND STATUS: Identify any name changes or rebranding.
+    7. OVERVIEW: Always include an Overview bullet detailing physical specs, building style, unit/bed count (e.g. 168-unit community), care levels (if Senior Living), and key amenities.
     8. VALUE-ADD / RENOVATIONS: Only list specific capital improvement plans if explicitly found in research. Otherwise, strictly state "N/A".
     9. TRANSACTION CONTEXT: Summarize purchase price, sale date, buyer, seller, and brokerage details.
 
@@ -182,22 +189,16 @@ if st.button("Generate Research Note"):
             row = get_property_data_from_sheet(opportunity_input)
             
             if row is not None:
-                # The exact column extraction logic that worked for you before
-                def get_col_val(header_name):
-                    val = row.get(header_name)
-                    if val and str(val).strip().lower() not in ['nan', 'none', '', '#n/a']:
-                        return str(val).strip()
-                    return ''
-
-                opp_name = get_col_val('Opportunity Name') or opportunity_input
-                prop_name = get_col_val('Property Name') or opp_name
-                street = get_col_val('Street')
-                city = get_col_val('City')
-                state = get_col_val('State/Province')
-                zip_code = get_col_val('Zip/Postal Code')
+                # Use the bulletproof flexible column extractor
+                opp_name = get_flexible_col(row, ['Opportunity Name']) or opportunity_input
+                prop_name = get_flexible_col(row, ['Property Name']) or opp_name
+                street = get_flexible_col(row, ['Street', 'Street Address'])
+                city = get_flexible_col(row, ['City'])
+                state = get_flexible_col(row, ['State/Province', 'State'])
+                zip_code = get_flexible_col(row, ['Zip/Postal Code', 'Zip Code', 'Zip'])
                 
-                prev_owner = get_col_val('Previous License Account') or 'Unknown'
-                prev_sop = get_col_val('Previous SOP') or 'Unknown'
+                prev_owner = get_flexible_col(row, ['Previous License Account', 'Previous Owner']) or 'Unknown'
+                prev_sop = get_flexible_col(row, ['Previous SOP', 'Previous Manager']) or 'Unknown'
                 
                 # Dynamic address builder
                 addr_parts = [p for p in [street, city, state, zip_code] if p]
